@@ -46,7 +46,6 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "demo": "vite --open /demo/",
-    "demo:build": "vite build --outDir demo-dist",
     "sample": "node scripts/make-sample.mjs",
     "prepublishOnly": "npm run build"
   },
