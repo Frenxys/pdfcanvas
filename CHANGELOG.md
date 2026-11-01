@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+
+- Commit an open text edit before exporting (Ctrl/Cmd+S during editing exports the current text).
+
 ## 0.5.1
 
 - Formatting-only edits are now exported even when the text itself is unchanged.

@@ -2582,6 +2582,8 @@ export class PdfCanvas {
 
   async exportPdf(options: ExportOptions = {}): Promise<Uint8Array> {
     try {
+      if (this.originalEdit) this.finishOriginalEdit();
+      if (this.editingState) this.finishEdit();
       const prepared =
         this.textEdits.size > 0
           ? await this.prepareOriginalEdits()
