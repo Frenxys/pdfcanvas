@@ -3,6 +3,7 @@ export type PdfSource = ArrayBuffer | Uint8Array | Blob | File | string;
 export type Tool =
   | "select"
   | "text"
+  | "text-edit"
   | "image"
   | "rect"
   | "ellipse"
@@ -103,6 +104,11 @@ export interface PdfCanvasOptions {
   standardFontDataUrl?: string;
   /** URL of the pdf.js `wasm/` directory (trailing slash). */
   wasmUrl?: string;
+  /**
+   * URL of `pdfium.wasm`. Enables editing existing PDF text.
+   * Without it, only overlay editing is available.
+   */
+  pdfiumWasmUrl?: string;
   /** Initial zoom. `fit-width` works once the container is visible. */
   initialZoom?: number | "fit-width" | "fit-page";
   minZoom?: number;

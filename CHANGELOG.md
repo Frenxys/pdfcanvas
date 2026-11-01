@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.2
+
+- Commit/restore original-text edits around selection, undo/redo and page operations.
+- Re-layout overlays after zoom changes.
+
+## 0.2.1
+
+- Validate text edits by regenerating the page and reading the object back.
+- Apply original-text edits on a fresh PDFium document at export, so undo/redo never leaks stale mutations.
+- Failing code points now fall back to the visual overlay instead of exporting filler glyphs.
+
+## 0.2.0
+
+- **Edit existing PDF text in place** with PDFium WASM.
+- New `text-edit` tool and `pdfiumWasmUrl` option.
+- Text edits are written as native PDF text; unchanged fonts and positions are preserved.
+- Automatic overlay fallback when a font cannot encode the replacement text or the run is rotated/inside a form.
+- Undo/redo includes original-text edits.
+
 ## 0.1.6
 
 - Clearer exported file names (`-pdfcanvas.pdf`, `-pdfcanvas-edit.pdf`).

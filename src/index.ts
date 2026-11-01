@@ -1,5 +1,11 @@
 export { PdfCanvas } from "./engine";
 export { buildPdf } from "./export";
+export { PdfiumTextEngine } from "./pdfium";
+export type {
+  PdfiumApplyResult,
+  PdfiumTextEdit,
+  PdfiumTextRun,
+} from "./pdfium";
 export { STYLES } from "./styles";
 export {
   displayToPdf,

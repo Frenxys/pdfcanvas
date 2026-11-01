@@ -1,6 +1,11 @@
 import { STYLES } from "./styles";
 import { buildPdf } from "./export";
 import {
+  PdfiumTextEngine,
+  type PdfiumTextEdit,
+  type PdfiumTextRun,
+} from "./pdfium";
+import {
   displaySize,
   objectBounds,
   totalRotation,
@@ -71,6 +76,7 @@ interface Point {
 const TOOL_KEYS: Record<string, Tool> = {
   v: "select",
   t: "text",
+  e: "text-edit",
   i: "image",
   r: "rect",
   o: "ellipse",
@@ -119,6 +125,20 @@ export class PdfCanvas {
   private zoomTimer: ReturnType<typeof setTimeout> | null = null;
   private selectionEl: HTMLDivElement | null = null;
   private destroyed = false;
+  private pdfium: PdfiumTextEngine | null = null;
+  private pdfiumLoading: Promise<PdfiumTextEngine> | null = null;
+  private pdfiumGeneration = 0;
+  private textRuns = new Map<string, PdfiumTextRun[]>();
+  private textRunsLoading = new Set<string>();
+  private textEdits = new Map<string, PdfiumTextEdit>();
+  private originalEdit: {
+    page: PageState;
+    run: PdfiumTextRun;
+    el: HTMLDivElement;
+    previous: string;
+    background: string;
+  } | null = null;
+  private rotationWarningShown = false;
 
   constructor(container: HTMLElement, options: PdfCanvasOptions = {}) {
     if (!container) throw new Error("A container element is required.");
@@ -352,6 +372,15 @@ export class PdfCanvas {
     this.detachDragListeners();
     this.drag = null;
     this.pendingInsert = null;
+    this.originalEdit = null;
+    this.pdfiumGeneration += 1;
+    this.pdfium?.destroy();
+    this.pdfium = null;
+    this.pdfiumLoading = null;
+    this.textRuns.clear();
+    this.textRunsLoading.clear();
+    this.textEdits.clear();
+    this.rotationWarningShown = false;
     for (const task of this.renderTasks.values()) {
       try {
         task.cancel();
@@ -555,6 +584,7 @@ export class PdfCanvas {
       overlay.appendChild(this.createObjectElement(page, object));
     }
     this.renderSelection();
+    this.renderOriginalText(page);
   }
 
   private createObjectElement(page: PageState, object: SceneObject): HTMLElement {
@@ -714,10 +744,328 @@ export class PdfCanvas {
     );
   }
 
+  // -------------------------------------------------------- original text
+
+  private async ensurePdfium(): Promise<PdfiumTextEngine> {
+    if (this.pdfium) return this.pdfium;
+    if (!this.options.pdfiumWasmUrl) {
+      throw new Error(
+        "pdfcanvas: options.pdfiumWasmUrl is required to edit original PDF text.",
+      );
+    }
+    if (!this.sourceBytes) throw new Error("Nessun PDF caricato.");
+    if (!this.pdfiumLoading) {
+      const generation = this.pdfiumGeneration;
+      const bytes = new Uint8Array(this.sourceBytes);
+      this.pdfiumLoading = PdfiumTextEngine.create(
+        this.options.pdfiumWasmUrl,
+        bytes,
+      )
+        .then((engine) => {
+          if (generation !== this.pdfiumGeneration) {
+            engine.destroy();
+            throw new Error("Il documento è cambiato durante il caricamento.");
+          }
+          this.pdfium = engine;
+          return engine;
+        })
+        .catch((error: unknown) => {
+          if (generation === this.pdfiumGeneration) this.pdfiumLoading = null;
+          throw error;
+        });
+    }
+    return this.pdfiumLoading;
+  }
+
+  private async ensureTextRuns(page: PageState): Promise<void> {
+    if (this.textRuns.has(page.id) || this.textRunsLoading.has(page.id)) return;
+    if (page.sourceIndex === null) {
+      this.textRuns.set(page.id, []);
+      return;
+    }
+    if (totalRotation(page) !== 0) {
+      this.textRuns.set(page.id, []);
+      if (!this.rotationWarningShown) {
+        this.rotationWarningShown = true;
+        this.fail(
+          new Error(
+            "Il testo originale si può modificare solo su pagine non ruotate. Usa lo strumento Testo per aggiungere contenuto.",
+          ),
+        );
+      }
+      return;
+    }
+    this.textRunsLoading.add(page.id);
+    try {
+      const engine = await this.ensurePdfium();
+      if (!this.pageEls.has(page.id)) return;
+      const runs = engine.readPage(page.sourceIndex, totalRotation(page));
+      this.textRuns.set(page.id, runs);
+      this.renderOriginalText(page);
+    } catch (error) {
+      this.textRuns.set(page.id, []);
+      this.fail(error);
+    } finally {
+      this.textRunsLoading.delete(page.id);
+    }
+  }
+
+  private renderOriginalText(page: PageState) {
+    const overlay = this.pageEls
+      .get(page.id)
+      ?.querySelector<HTMLElement>(".pc-overlay");
+    if (!overlay) return;
+    if (this.originalEdit?.page.id === page.id) return;
+    overlay
+      .querySelectorAll(".pc-orig-hit, .pc-orig-preview, .pc-orig-editor")
+      .forEach((node) => node.remove());
+
+    for (const edit of this.textEdits.values()) {
+      if (edit.pageIndex !== page.sourceIndex) continue;
+      overlay.appendChild(this.createOriginalPreview(edit));
+    }
+
+    if (this.tool !== "text-edit") return;
+    const runs = this.textRuns.get(page.id);
+    if (!runs) {
+      void this.ensureTextRuns(page);
+      return;
+    }
+    for (const run of runs) {
+      const hit = document.createElement("div");
+      hit.className = "pc-orig-hit";
+      hit.style.left = `${run.x * this.zoom}px`;
+      hit.style.top = `${run.y * this.zoom}px`;
+      hit.style.width = `${Math.max(12, run.w * this.zoom)}px`;
+      hit.style.height = `${Math.max(10, run.h * this.zoom)}px`;
+      hit.title = "Modifica questo testo";
+      hit.dataset.originalText = run.text;
+      hit.setAttribute("aria-label", `Modifica testo: ${run.text}`);
+      hit.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.beginOriginalTextEdit(page, run);
+      });
+      overlay.appendChild(hit);
+    }
+  }
+
+  private createOriginalPreview(edit: PdfiumTextEdit): HTMLDivElement {
+    const preview = document.createElement("div");
+    preview.className = "pc-orig-preview";
+    preview.style.left = `${edit.x * this.zoom}px`;
+    preview.style.top = `${edit.y * this.zoom}px`;
+    preview.style.minWidth = `${edit.w * this.zoom}px`;
+    preview.style.minHeight = `${edit.h * this.zoom}px`;
+    preview.style.fontSize = `${edit.fontSize * this.zoom}px`;
+    preview.style.fontFamily = FONT_CSS[edit.fontFamily];
+    preview.style.fontWeight = edit.bold ? "700" : "400";
+    preview.style.fontStyle = edit.italic ? "italic" : "normal";
+    preview.style.color = edit.color;
+    preview.style.background = edit.background;
+    preview.textContent = edit.newText;
+    return preview;
+  }
+
+  private beginOriginalTextEdit(page: PageState, run: PdfiumTextRun) {
+    if (this.originalEdit) this.finishOriginalEdit();
+    this.beginMutation();
+    const existing = this.textEdits.get(run.key);
+    const background = existing?.background ?? this.sampleBackground(page, run);
+    const editor = document.createElement("div");
+    editor.className = "pc-orig-editor";
+    editor.contentEditable = "true";
+    editor.spellcheck = false;
+    editor.style.left = `${run.x * this.zoom}px`;
+    editor.style.top = `${run.y * this.zoom}px`;
+    editor.style.minWidth = `${Math.max(12, run.w * this.zoom)}px`;
+    editor.style.minHeight = `${Math.max(10, run.h * this.zoom)}px`;
+    editor.style.fontSize = `${run.fontSize * this.zoom}px`;
+    editor.style.fontFamily = FONT_CSS[run.fontFamily];
+    editor.style.fontWeight = run.bold ? "700" : "400";
+    editor.style.fontStyle = run.italic ? "italic" : "normal";
+    editor.style.color = run.color;
+    editor.style.background = background;
+    editor.textContent = existing?.newText ?? run.text;
+    editor.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (text) document.execCommand("insertText", false, text);
+    });
+    editor.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        editor.blur();
+      }
+    });
+    editor.addEventListener("blur", () => this.finishOriginalEdit());
+    const overlay = this.pageEls
+      .get(page.id)
+      ?.querySelector<HTMLElement>(".pc-overlay");
+    overlay?.appendChild(editor);
+    this.originalEdit = {
+      page,
+      run,
+      el: editor,
+      previous: existing?.newText ?? run.text,
+      background,
+    };
+    editor.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  private finishOriginalEdit() {
+    const state = this.originalEdit;
+    if (!state) return;
+    this.originalEdit = null;
+    const text = state.el.innerText
+      .replace(/\u00a0/g, " ")
+      .replace(/\n$/, "");
+    state.el.remove();
+    if (!text.trim() || text === state.run.text) {
+      this.textEdits.delete(state.run.key);
+    } else {
+      this.textEdits.set(state.run.key, {
+        ...state.run,
+        newText: text,
+        originalText: state.run.text,
+        background: state.background,
+      });
+    }
+    this.commitMutation("text");
+    this.renderObjects(state.page);
+    this.emit("change", { reason: "text" });
+  }
+
+  private sampleBackground(page: PageState, run: PdfiumTextRun): string {
+    const canvas = this.pageEls.get(page.id)?.querySelector("canvas");
+    if (!canvas) return "#ffffff";
+    const context = canvas.getContext("2d");
+    if (!context) return "#ffffff";
+    const [displayWidth, displayHeight] = displaySize(page);
+    const scaleX = canvas.width / Math.max(1, displayWidth);
+    const scaleY = canvas.height / Math.max(1, displayHeight);
+    const samples: Array<[number, number, number]> = [];
+    const points: Array<[number, number]> = [
+      [run.x - 3, run.y - 3],
+      [run.x + run.w + 3, run.y - 3],
+      [run.x - 3, run.y + run.h + 3],
+      [run.x + run.w + 3, run.y + run.h + 3],
+      [run.x + run.w / 2, run.y - 3],
+      [run.x + run.w / 2, run.y + run.h + 3],
+    ];
+    for (const [x, y] of points) {
+      const px = clamp(Math.round(x * scaleX), 0, canvas.width - 1);
+      const py = clamp(Math.round(y * scaleY), 0, canvas.height - 1);
+      try {
+        const data = context.getImageData(px, py, 1, 1).data;
+        samples.push([data[0] ?? 255, data[1] ?? 255, data[2] ?? 255]);
+      } catch {
+        // Tainted canvas or read failure: fall back to white.
+      }
+    }
+    if (samples.length === 0) return "#ffffff";
+    const median = (index: 0 | 1 | 2) => {
+      const values = samples.map((sample) => sample[index]).sort((a, b) => a - b);
+      return values[Math.floor(values.length / 2)] ?? 255;
+    };
+    return `#${[median(0), median(1), median(2)]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("")}`;
+  }
+
+  private pagesWithFallback(edits: PdfiumTextEdit[]): PageState[] {
+    const pages = deepClone(this.pages);
+    for (const edit of edits) {
+      const page = pages.find((item) => item.sourceIndex === edit.pageIndex);
+      if (!page) continue;
+      const measured = measureText(
+        edit.newText,
+        edit.fontSize,
+        edit.fontFamily,
+        edit.bold,
+        edit.italic,
+      );
+      page.objects.push({
+        id: uid(),
+        type: "shape",
+        shape: "rect",
+        x: edit.x,
+        y: edit.y,
+        w: edit.w,
+        h: edit.h,
+        opacity: 1,
+        fill: edit.background,
+        stroke: null,
+        strokeWidth: 0,
+      });
+      page.objects.push({
+        id: uid(),
+        type: "text",
+        x: edit.x,
+        y: edit.y,
+        w: measured.width,
+        h: measured.height,
+        opacity: 1,
+        text: edit.newText,
+        fontFamily: edit.fontFamily,
+        fontSize: edit.fontSize,
+        bold: edit.bold,
+        italic: edit.italic,
+        color: edit.color,
+        align: "left",
+      });
+    }
+    return pages;
+  }
+
+  private async prepareOriginalEdits(): Promise<{
+    bytes: Uint8Array | null;
+    pages: PageState[];
+  }> {
+    if (this.textEdits.size === 0 || !this.sourceBytes) {
+      return { bytes: this.sourceBytes, pages: this.pages };
+    }
+    const edits = [...this.textEdits.values()];
+    try {
+      if (!this.options.pdfiumWasmUrl) {
+        return { bytes: this.sourceBytes, pages: this.pagesWithFallback(edits) };
+      }
+      // Apply on a fresh document every time. The live PDFium instance must not
+      // accumulate mutations: otherwise undo would keep a text change that is no
+      // longer in the edit map.
+      const engine = await PdfiumTextEngine.create(
+        this.options.pdfiumWasmUrl,
+        new Uint8Array(this.sourceBytes),
+      );
+      try {
+        const result = engine.applyEdits(edits);
+        return {
+          bytes: result.bytes,
+          pages:
+            result.failed.length > 0
+              ? this.pagesWithFallback(result.failed)
+              : this.pages,
+        };
+      } finally {
+        engine.destroy();
+      }
+    } catch (error) {
+      this.fail(error);
+      return { bytes: this.sourceBytes, pages: this.pagesWithFallback(edits) };
+    }
+  }
+
   // ------------------------------------------------------------- selection
 
   select(pageId: string | null, objectId: string | null) {
     if (this.editingState) this.finishEdit();
+    if (this.originalEdit) this.finishOriginalEdit();
     this.selectedPageId = pageId;
     this.selectedObjectId = objectId;
     this.renderSelection();
@@ -750,6 +1098,7 @@ export class PdfCanvas {
   }
 
   async addBlankPage(afterIndex = this.currentPageIndex): Promise<void> {
+    if (this.originalEdit) this.finishOriginalEdit();
     const current = this.pages[afterIndex] ?? this.pages[this.pages.length - 1];
     if (!current) return;
     const [width, height] = displaySize(current);
@@ -772,6 +1121,7 @@ export class PdfCanvas {
   }
 
   deletePage(index: number): boolean {
+    if (this.originalEdit) this.finishOriginalEdit();
     if (this.pages.length <= 1) {
       this.fail(new Error("A document needs at least one page."));
       return false;
@@ -791,6 +1141,7 @@ export class PdfCanvas {
   }
 
   rotatePage(index: number, delta = 90): void {
+    if (this.originalEdit) this.finishOriginalEdit();
     const page = this.pages[index];
     if (!page) return;
     this.beginMutation();
@@ -803,6 +1154,7 @@ export class PdfCanvas {
   }
 
   movePage(from: number, to: number): void {
+    if (this.originalEdit) this.finishOriginalEdit();
     if (from === to || !this.pages[from] || to < 0 || to >= this.pages.length) {
       return;
     }
@@ -827,7 +1179,10 @@ export class PdfCanvas {
     );
     if (next === this.zoom) return;
     this.zoom = next;
-    for (const page of this.pages) this.applyPageLayout(page);
+    for (const page of this.pages) {
+      this.applyPageLayout(page);
+      this.renderObjects(page);
+    }
     if (this.zoomTimer) clearTimeout(this.zoomTimer);
     this.zoomTimer = setTimeout(() => this.renderVisible(), 70);
     this.emit("zoom", { zoom: next });
@@ -1092,6 +1447,7 @@ export class PdfCanvas {
     return JSON.stringify({
       pages: this.pages,
       currentPage: this.currentPageIndex,
+      textEdits: [...this.textEdits.values()],
     });
   }
 
@@ -1116,6 +1472,7 @@ export class PdfCanvas {
   }
 
   undo(): void {
+    if (this.originalEdit) this.finishOriginalEdit();
     if (this.history.length === 0) return;
     const current = this.snapshot();
     const previous = this.history.pop();
@@ -1126,6 +1483,7 @@ export class PdfCanvas {
   }
 
   redo(): void {
+    if (this.originalEdit) this.finishOriginalEdit();
     if (this.future.length === 0) return;
     const current = this.snapshot();
     const next = this.future.pop();
@@ -1140,8 +1498,13 @@ export class PdfCanvas {
       const parsed = JSON.parse(snapshot) as {
         pages: PageState[];
         currentPage: number;
+        textEdits?: PdfiumTextEdit[];
       };
       this.pages = parsed.pages;
+      this.textEdits = new Map(
+        (parsed.textEdits ?? []).map((edit) => [edit.key, edit]),
+      );
+      this.originalEdit = null;
       this.currentPageIndex = clamp(
         parsed.currentPage ?? 0,
         0,
@@ -1854,9 +2217,35 @@ export class PdfCanvas {
 
   setTool(tool: Tool) {
     if (this.editingState) this.finishEdit();
+    if (this.originalEdit) this.finishOriginalEdit();
     this.tool = tool;
     this.root.dataset.tool = tool;
     if (tool !== "select") this.clearSelection();
+    if (tool === "text-edit") {
+      if (!this.options.pdfiumWasmUrl || !this.sourceBytes) {
+        this.tool = "select";
+        this.root.dataset.tool = "select";
+        this.fail(
+          new Error(
+            "La modifica del testo originale non è configurata (pdfiumWasmUrl mancante).",
+          ),
+        );
+      } else {
+        void this.ensurePdfium()
+          .then(() => {
+            if (this.tool !== "text-edit") return;
+            for (const page of this.pages) this.renderObjects(page);
+          })
+          .catch((error: unknown) => {
+            if (this.tool !== "text-edit") return;
+            this.tool = "select";
+            this.root.dataset.tool = "select";
+            this.fail(error);
+            for (const page of this.pages) this.renderObjects(page);
+          });
+      }
+    }
+    for (const page of this.pages) this.renderObjects(page);
     this.emit("change", { reason: "tool" });
   }
 
@@ -1965,7 +2354,16 @@ export class PdfCanvas {
 
   async exportPdf(options: ExportOptions = {}): Promise<Uint8Array> {
     try {
-      const bytes = await buildPdf(this.pages, this.sourceBytes, this.fileName, options);
+      const prepared =
+        this.textEdits.size > 0
+          ? await this.prepareOriginalEdits()
+          : { bytes: this.sourceBytes, pages: this.pages };
+      const bytes = await buildPdf(
+        prepared.pages,
+        prepared.bytes,
+        this.fileName,
+        options,
+      );
       this.emit("export", {
         bytes,
         fileName: options.fileName ?? outputFileName(this.fileName),
@@ -1985,6 +2383,12 @@ export class PdfCanvas {
 
   destroy() {
     this.destroyed = true;
+    this.pdfiumGeneration += 1;
+    this.pdfium?.destroy();
+    this.pdfium = null;
+    this.pdfiumLoading = null;
+    this.textEdits.clear();
+    this.textRuns.clear();
     this.detachDragListeners();
     this.observer?.disconnect();
     this.root.removeEventListener("keydown", this.onKeyDown);

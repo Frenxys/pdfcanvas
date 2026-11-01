@@ -13,6 +13,7 @@
 ## Features
 
 - **PDF.js rendering** with lazy pages, zoom, fit-to-width and DPR-aware canvases.
+- **Edit existing PDF text in place** with PDFium WASM, the same engine Chrome uses.
 - **Scene objects**: text, images, rectangles, ellipses, lines, freehand pen, highlighter and whiteout.
 - **Direct manipulation**: drag, resize, centre snapping, arrow-key nudge, duplicate, z-order, delete.
 - **Text editing** in place, with font family, size, weight, style, colour and alignment.
@@ -28,7 +29,7 @@
 npm install pdfcanvas pdfjs-dist pdf-lib
 ```
 
-`pdfjs-dist` and `pdf-lib` are dependencies of the package, but installing them explicitly keeps your lockfile and worker paths obvious.
+`pdfjs-dist`, `pdf-lib` and `@embedpdf/pdfium` are dependencies of the package, but installing them explicitly keeps your lockfile and worker paths obvious.
 
 ## Quick start
 
@@ -41,10 +42,12 @@ const editor = new PdfCanvas(document.querySelector("#editor")!, {
   cMapUrl: "/pdfjs/cmaps/",
   standardFontDataUrl: "/pdfjs/standard_fonts/",
   wasmUrl: "/pdfjs/wasm/",
+  pdfiumWasmUrl: "/pdfium/pdfium.wasm",
   initialZoom: "fit-width",
 });
 
-await editor.load(file);            // File | Blob | ArrayBuffer | Uint8Array | URL
+await editor.load(file);
+editor.setTool("text-edit");   // click an existing text line to edit it            // File | Blob | ArrayBuffer | Uint8Array | URL
 editor.addText(80, 120, { text: "Hello", fontSize: 24, color: "#6b4eff" });
 editor.addShape("rect", { x: 80, y: 180, width: 200, height: 90 });
 await editor.download();            // downloads "file-pdfcanvas.pdf"
@@ -61,6 +64,7 @@ build/pdf.worker.min.mjs        -> public/pdfjs/pdf.worker.min.mjs
 cmaps/                          -> public/pdfjs/cmaps/
 standard_fonts/                 -> public/pdfjs/standard_fonts/
 wasm/                           -> public/pdfjs/wasm/
+@embedpdf/pdfium/dist/pdfium.wasm -> public/pdfium/pdfium.wasm
 ```
 
 ```ts
@@ -69,6 +73,7 @@ new PdfCanvas(el, {
   cMapUrl: "/pdfjs/cmaps/",
   standardFontDataUrl: "/pdfjs/standard_fonts/",
   wasmUrl: "/pdfjs/wasm/",
+  pdfiumWasmUrl: "/pdfium/pdfium.wasm",
 });
 ```
 
@@ -95,6 +100,7 @@ new PdfCanvas(container: HTMLElement, options?: PdfCanvasOptions)
 | `cMapUrl` | `string` | — | Directory with pdf.js CMaps. |
 | `standardFontDataUrl` | `string` | — | Directory with pdf.js standard fonts. |
 | `wasmUrl` | `string` | — | Directory with pdf.js WASM decoders. |
+| `pdfiumWasmUrl` | `string` | — | PDFium WASM URL. Enables editing original text. |
 | `initialZoom` | `number \| "fit-width" \| "fit-page"` | `1` | Initial zoom. |
 | `minZoom` / `maxZoom` | `number` | `0.15` / `5` | Zoom limits. |
 | `historyLimit` | `number` | `60` | Undo steps kept in memory. |
@@ -146,7 +152,7 @@ editor.redo();
 ### Zoom and tools
 
 ```ts
-editor.setTool("select" | "text" | "image" | "rect" | "ellipse" | "line" | "pen" | "highlight" | "whiteout");
+editor.setTool("select" | "text" | "text-edit" | "image" | "rect" | "ellipse" | "line" | "pen" | "highlight" | "whiteout");
 editor.setZoom(1.25);
 editor.zoomIn();
 editor.zoomOut();
@@ -168,7 +174,7 @@ Events: `load`, `change`, `selectionchange`, `zoom`, `pagechange`, `error`, `exp
 
 | Keys | Action |
 | --- | --- |
-| `V` / `T` / `I` / `R` / `O` / `L` / `P` / `H` / `W` | Select / text / image / rectangle / ellipse / line / pen / highlight / whiteout |
+| `V` / `T` / `E` / `I` / `R` / `O` / `L` / `P` / `H` / `W` | Select / text / edit original text / image / rectangle / ellipse / line / pen / highlight / whiteout |
 | `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` | Undo / redo |
 | `Ctrl/Cmd+D` | Duplicate |
 | `Ctrl/Cmd+S` | Emit `save` |
@@ -188,7 +194,9 @@ Events: `load`, `change`, `selectionchange`, `zoom`, `pagechange`, `error`, `exp
 
 ### Known limitations
 
-- Existing PDF text cannot be reflowed. Cover it with the whiteout tool and type on top (this is the same approach as many browser editors).
+- Existing PDF text can be edited in place when it is a real text object with an encodable font. Rotated text and text inside Form XObjects are left untouched in this version.
+- If the font cannot encode the new characters, the library falls back to a background patch plus an overlay text object.
+- Existing PDF text cannot be reflowed. Cover it with the whiteout tool and type on top if you need a different layout.
 - Encrypted PDFs can be viewed but not exported until the password is removed (pdf-lib cannot decrypt).
 - Interactive form fields (AcroForm) are not copied by pdf-lib on export.
 - Crop-box offsets other than `(0, 0)` are normalised to the media box.

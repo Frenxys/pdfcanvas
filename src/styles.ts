@@ -106,6 +106,40 @@ export const STYLES = `
   border: 1.5px solid var(--pc-accent);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
 }
+.pc-orig-hit {
+  position: absolute;
+  z-index: 30;
+  pointer-events: auto;
+  cursor: text;
+  border: 1px dashed transparent;
+  border-radius: 2px;
+}
+.pc-orig-hit:hover {
+  border-color: var(--pc-accent);
+  background: rgba(107, 78, 255, 0.08);
+}
+.pc-orig-preview {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  white-space: pre;
+  line-height: 1.25;
+  padding: 0;
+  margin: 0;
+  border-radius: 1px;
+}
+.pc-orig-editor {
+  position: absolute;
+  z-index: 60;
+  white-space: pre;
+  line-height: 1.25;
+  padding: 0 1px;
+  margin: 0;
+  outline: 1.5px solid var(--pc-accent);
+  box-shadow: 0 2px 10px rgba(25, 23, 34, 0.18);
+  cursor: text;
+}
+.pc-root[data-tool="text-edit"] .pc-page { cursor: text; }
 .pc-handle {
   position: absolute;
   width: 11px;

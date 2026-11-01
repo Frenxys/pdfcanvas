@@ -1,4 +1,5 @@
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import pdfiumWasmUrl from "@embedpdf/pdfium/pdfium.wasm?url";
 import { PdfCanvas } from "../src/index";
 
 const container = document.querySelector<HTMLElement>("#editor");
@@ -6,6 +7,7 @@ if (!container) throw new Error("Missing #editor");
 
 const editor = new PdfCanvas(container, {
   workerSrc: workerUrl,
+  pdfiumWasmUrl,
   initialZoom: "fit-width",
   onError: (error) => console.error("[demo]", error),
 });
@@ -30,6 +32,10 @@ pdfInput?.addEventListener("change", async () => {
 
 document.querySelector("#text")?.addEventListener("click", () => {
   editor.addText(undefined, undefined, { text: "Hello from pdfcanvas" });
+});
+
+document.querySelector("#edit-text")?.addEventListener("click", () => {
+  editor.setTool("text-edit");
 });
 
 const imageInput = document.querySelector<HTMLInputElement>("#image-input");
