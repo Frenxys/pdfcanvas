@@ -349,6 +349,9 @@ export class PdfCanvas {
   private reset() {
     this.observer?.disconnect();
     this.observer = null;
+    this.detachDragListeners();
+    this.drag = null;
+    this.pendingInsert = null;
     for (const task of this.renderTasks.values()) {
       try {
         task.cancel();

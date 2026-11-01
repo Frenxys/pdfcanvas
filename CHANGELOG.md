@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Cancel an in-flight drag/resize when a new document is loaded.
+- Clear pending image placement on load.
+
 ## 0.1.4
 
 - Fixed standard PDF font names (Times, Courier, Helvetica bold/italic) so text export uses real vector fonts.
