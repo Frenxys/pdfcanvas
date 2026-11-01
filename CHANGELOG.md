@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- Clearer exported file names (`-pdfcanvas.pdf`, `-pdfcanvas-edit.pdf`).
+
 ## 0.1.5
 
 - Cancel an in-flight drag/resize when a new document is loaded.

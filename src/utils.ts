@@ -257,7 +257,9 @@ export function downloadBytes(bytes: Uint8Array, fileName: string): void {
 
 export function outputFileName(name: string): string {
   const base = name.replace(/\.pdf$/i, "");
-  if (/-pdfcanvas$/i.test(base)) return `${base}.pdf`;
+  if (/-pdfcanvas(-edit)?$/i.test(base)) {
+    return `${base.replace(/-edit$/i, "")}-edit.pdf`;
+  }
   return `${base}-pdfcanvas.pdf`;
 }
 
