@@ -51,6 +51,10 @@ export interface PdfiumTextEdit extends PdfiumTextRun {
   newText: string;
   originalText: string;
   background: string;
+  boldOverride?: boolean;
+  italicOverride?: boolean;
+  fontSizeOverride?: number;
+  colorOverride?: string;
 }
 
 export interface PdfiumApplyResult {
@@ -65,6 +69,22 @@ interface PageBox {
   top: number;
   width: number;
   height: number;
+}
+
+interface EditStyle {
+  bold: boolean;
+  italic: boolean;
+  fontSize: number;
+  color: string;
+}
+
+function editStyle(run: PdfiumTextRun, edit: PdfiumTextEdit): EditStyle {
+  return {
+    bold: edit.boldOverride ?? run.bold,
+    italic: edit.italicOverride ?? run.italic,
+    fontSize: edit.fontSizeOverride ?? run.fontSize,
+    color: edit.colorOverride ?? run.color,
+  };
 }
 
 const MIN_INK_EM_PER_CHAR = 0.15;
@@ -280,7 +300,14 @@ export class PdfiumTextEngine {
     let applied = 0;
 
     for (const edit of edits) {
-      if (!edit.newText || edit.newText === edit.originalText) continue;
+      const hasFormat =
+        edit.boldOverride !== undefined ||
+        edit.italicOverride !== undefined ||
+        edit.fontSizeOverride !== undefined ||
+        edit.colorOverride !== undefined;
+      if (!edit.newText || (edit.newText === edit.originalText && !hasFormat)) {
+        continue;
+      }
       const pagePtr = this.page(edit.pageIndex);
       if (!pagePtr) {
         failed.push(edit);
@@ -310,35 +337,71 @@ export class PdfiumTextEngine {
     run: PdfiumTextRun,
     edit: PdfiumTextEdit,
   ): boolean {
-    if (this.applyExistingRun(pagePtr, pageIndex, run, edit)) return true;
+    const style = editStyle(run, edit);
+    const hasLayoutFormat =
+      edit.boldOverride !== undefined ||
+      edit.italicOverride !== undefined ||
+      edit.fontSizeOverride !== undefined;
+    if (
+      !hasLayoutFormat &&
+      this.applyExistingRun(pagePtr, pageIndex, run, edit)
+    ) {
+      return true;
+    }
     const target =
       run.members.find((member) => member.text.trim().length > 0) ??
       run.members[0];
     if (target) {
-      const embeddedFont = this.loadEmbeddedFont(target.fontPtr);
-      if (
-        embeddedFont &&
-        this.applyReplacementRun(pagePtr, pageIndex, run, edit, embeddedFont)
-      ) {
-        return true;
+      if (!hasLayoutFormat) {
+        const embeddedFont = this.loadEmbeddedFont(target.fontPtr);
+        if (
+          embeddedFont &&
+          this.applyReplacementRun(
+            pagePtr,
+            pageIndex,
+            run,
+            edit,
+            embeddedFont,
+            style,
+          )
+        ) {
+          return true;
+        }
       }
-      const fallbackFont = this.loadFallbackFont(run);
+      const fallbackFont = this.loadFallbackFont(run, style);
       if (
         fallbackFont &&
-        this.applyReplacementRun(pagePtr, pageIndex, run, edit, fallbackFont)
+        this.applyReplacementRun(
+          pagePtr,
+          pageIndex,
+          run,
+          edit,
+          fallbackFont,
+          style,
+        )
       ) {
         return true;
       }
     }
     const standardFont = this.m.FPDFText_LoadStandardFont(
       this.docPtr,
-      standardFontName(run),
+      standardFontName(run, style),
     );
     if (!standardFont) return false;
-    return this.applyReplacementRun(pagePtr, pageIndex, run, edit, standardFont);
+    return this.applyReplacementRun(
+      pagePtr,
+      pageIndex,
+      run,
+      edit,
+      standardFont,
+      style,
+    );
   }
 
-  private loadFallbackFont(run: PdfiumTextRun): number | null {
+  private loadFallbackFont(
+    run: PdfiumTextRun,
+    style: { bold: boolean; italic: boolean },
+  ): number | null {
     let family: string;
     if (/work\s*sans|worksans/i.test(run.fontName)) {
       family = "worksans";
@@ -347,14 +410,14 @@ export class PdfiumTextEngine {
     } else {
       return null;
     }
-    const style = run.bold
-      ? run.italic
+    const styleName = style.bold
+      ? style.italic
         ? "bolditalic"
         : "bold"
-      : run.italic
+      : style.italic
         ? "italic"
         : "regular";
-    const key = `${family}-${style}`;
+    const key = `${family}-${styleName}`;
     const cached = this.fallbackFontPtrs.get(key);
     if (cached) return cached;
     const data = this.fallbackFontData.get(key);
@@ -415,6 +478,11 @@ export class PdfiumTextEngine {
         this.reloadTextPage(pageIndex);
         return false;
       }
+      if (edit.colorOverride) {
+        this.setObjectColor(member.objPtr, edit.colorOverride);
+        this.m.FPDFPage_GenerateContent(pagePtr);
+        this.reloadTextPage(pageIndex);
+      }
       return true;
     }
 
@@ -459,6 +527,11 @@ export class PdfiumTextEngine {
       this.m.FPDFPage_GenerateContent(pagePtr);
       this.reloadTextPage(pageIndex);
       return false;
+    }
+    if (edit.colorOverride) {
+      this.setObjectColor(target.objPtr, edit.colorOverride);
+      this.m.FPDFPage_GenerateContent(pagePtr);
+      this.reloadTextPage(pageIndex);
     }
     return true;
   }
@@ -529,16 +602,23 @@ export class PdfiumTextEngine {
     run: PdfiumTextRun,
     edit: PdfiumTextEdit,
     fontPtr: number,
+    style: EditStyle,
   ): boolean {
     const target =
       run.members.find((member) => member.text.trim().length > 0) ??
       run.members[0];
     if (!target) return false;
-    const replacementSize = this.matchFontSize(
-      target.fontPtr,
-      fontPtr,
-      target.textFontSize || run.textFontSize || run.fontSize,
-    );
+    const matrixScale = Math.hypot(target.matrix.a, target.matrix.b) || 1;
+    const sourceSize =
+      target.textFontSize || run.textFontSize || run.fontSize || style.fontSize;
+    const rawSize =
+      edit.fontSizeOverride !== undefined
+        ? style.fontSize / matrixScale
+        : sourceSize;
+    const replacementSize =
+      edit.fontSizeOverride !== undefined
+        ? Math.max(0.5, rawSize)
+        : this.matchFontSize(target.fontPtr, fontPtr, rawSize);
     const objectPtr = this.m.FPDFPageObj_CreateTextObj(
       this.docPtr,
       fontPtr,
@@ -556,7 +636,7 @@ export class PdfiumTextEngine {
         this.m.FPDFPageObj_Destroy(objectPtr);
         return false;
       }
-      const { r, g, b } = hexToRgb(run.color);
+      const { r, g, b } = hexToRgb(style.color);
       this.m.FPDFPageObj_SetFillColor(objectPtr, r, g, b, 255);
       this.setObjectMatrix(objectPtr, target.matrix);
       this.m.FPDFPage_InsertObject(pagePtr, objectPtr);
@@ -571,7 +651,7 @@ export class PdfiumTextEngine {
       if (
         normaliseText(roundTrip) !== normaliseText(edit.newText) ||
         !bbox ||
-        isCollapsed(bbox, edit.newText, run.fontSize)
+        isCollapsed(bbox, edit.newText, style.fontSize)
       ) {
         this.m.FPDFPage_RemoveObject(pagePtr, objectPtr);
         this.m.FPDFPageObj_Destroy(objectPtr);
@@ -925,6 +1005,11 @@ export class PdfiumTextEngine {
     }
   }
 
+  private setObjectColor(objPtr: number, color: string): void {
+    const { r, g, b } = hexToRgb(color);
+    this.m.FPDFPageObj_SetFillColor(objPtr, r, g, b, 255);
+  }
+
   private setObjectText(objPtr: number, text: string): boolean {
     const ptr = this.writeUtf16(text);
     if (!ptr) return false;
@@ -1064,22 +1149,22 @@ function isCollapsed(
   return bbox.right - bbox.left < visible * fontSize * MIN_INK_EM_PER_CHAR;
 }
 
-function standardFontName(run: PdfiumTextRun): string {
+function standardFontName(run: PdfiumTextRun, style: EditStyle): string {
   if (run.fontFamily === "times") {
-    if (run.bold && run.italic) return "Times-BoldItalic";
-    if (run.bold) return "Times-Bold";
-    if (run.italic) return "Times-Italic";
+    if (style.bold && style.italic) return "Times-BoldItalic";
+    if (style.bold) return "Times-Bold";
+    if (style.italic) return "Times-Italic";
     return "Times-Roman";
   }
   if (run.fontFamily === "courier") {
-    if (run.bold && run.italic) return "Courier-BoldOblique";
-    if (run.bold) return "Courier-Bold";
-    if (run.italic) return "Courier-Oblique";
+    if (style.bold && style.italic) return "Courier-BoldOblique";
+    if (style.bold) return "Courier-Bold";
+    if (style.italic) return "Courier-Oblique";
     return "Courier";
   }
-  if (run.bold && run.italic) return "Helvetica-BoldOblique";
-  if (run.bold) return "Helvetica-Bold";
-  if (run.italic) return "Helvetica-Oblique";
+  if (style.bold && style.italic) return "Helvetica-BoldOblique";
+  if (style.bold) return "Helvetica-Bold";
+  if (style.italic) return "Helvetica-Oblique";
   return "Helvetica";
 }
 

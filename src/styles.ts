@@ -131,6 +131,7 @@ export const STYLES = `
 .pc-orig-editor {
   position: absolute;
   z-index: 60;
+  pointer-events: auto;
   white-space: pre;
   line-height: 1.25;
   padding: 0 1px;

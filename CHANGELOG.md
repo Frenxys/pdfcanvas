@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1
+
+- Formatting-only edits are now exported even when the text itself is unchanged.
+- Documented caret, double-click editing and the `originaledit` API.
+
+## 0.5.0
+
+- Caret placement at the clicked character instead of selecting the whole line.
+- Double-click an existing text line with the Select tool to edit it.
+- Contextual format overrides for original text: bold, italic, size and colour.
+- Original-text edits are exposed through the `originaledit` event.
+- Formatting uses the bundled Work Sans/Liberation fonts and keeps visual font size.
+
 ## 0.4.1
 
 - Use the visual font size (font size × text matrix scale) in previews, fallback text and line grouping.

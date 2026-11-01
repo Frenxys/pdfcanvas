@@ -1,3 +1,5 @@
+import type { PdfiumTextEdit } from "./pdfium";
+
 export type PdfSource = ArrayBuffer | Uint8Array | Blob | File | string;
 
 export type Tool =
@@ -148,6 +150,7 @@ export interface PdfCanvasEventMap {
   error: { error: Error };
   export: { bytes: Uint8Array; fileName: string };
   save: Record<string, never>;
+  originaledit: { edit: PdfiumTextEdit | null };
 }
 
 export interface ExportOptions {

@@ -48,11 +48,19 @@ const editor = new PdfCanvas(document.querySelector("#editor")!, {
   initialZoom: "fit-width",
 });
 
-await editor.load(file);
-editor.setTool("text-edit");   // click an existing text line to edit it            // File | Blob | ArrayBuffer | Uint8Array | URL
+await editor.load(file); // File | Blob | ArrayBuffer | Uint8Array | URL
+editor.setTool("text-edit");   // click an existing text line to edit it
 editor.addText(80, 120, { text: "Hello", fontSize: 24, color: "#6b4eff" });
 editor.addShape("rect", { x: 80, y: 180, width: 200, height: 90 });
 await editor.download();            // downloads "file-pdfcanvas.pdf"
+```
+
+Existing text can be edited with the `text-edit` tool, or by double-clicking a text line with the Select tool. Use `updateOriginalText()` to change the selected line's bold/italic/size/colour:
+
+```ts
+editor.on("originaledit", ({ edit }) => {
+  if (edit) editor.updateOriginalText({ boldOverride: true });
+});
 ```
 
 The `#editor` element needs a height (for example `height: 100vh` or a flex child with `min-height: 0`).
@@ -154,6 +162,14 @@ editor.undo();
 editor.redo();
 ```
 
+### Original text formatting
+
+```ts
+editor.getOriginalEdits();
+editor.updateOriginalText({ boldOverride: true, fontSizeOverride: 24, colorOverride: "#c7442e" });
+editor.clearOriginalTextFocus();
+```
+
 ### Zoom and tools
 
 ```ts
@@ -173,7 +189,7 @@ const off = editor.on("change", ({ reason }) => {
 });
 ```
 
-Events: `load`, `change`, `selectionchange`, `zoom`, `pagechange`, `error`, `export`, `save` (`Ctrl/Cmd+S`).
+Events: `load`, `change`, `selectionchange`, `originaledit`, `zoom`, `pagechange`, `error`, `export`, `save` (`Ctrl/Cmd+S`).
 
 ### Keyboard shortcuts
 

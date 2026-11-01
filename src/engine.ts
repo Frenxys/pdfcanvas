@@ -138,6 +138,8 @@ export class PdfCanvas {
     previous: string;
     background: string;
   } | null = null;
+  private activeOriginalKey: string | null = null;
+  private activeOriginalPageId: string | null = null;
   private rotationWarningShown = false;
 
   constructor(container: HTMLElement, options: PdfCanvasOptions = {}) {
@@ -381,6 +383,8 @@ export class PdfCanvas {
     this.textRuns.clear();
     this.textRunsLoading.clear();
     this.textEdits.clear();
+    this.activeOriginalKey = null;
+    this.activeOriginalPageId = null;
     this.rotationWarningShown = false;
     for (const task of this.renderTasks.values()) {
       try {
@@ -472,6 +476,9 @@ export class PdfCanvas {
       this.applyPageLayout(page, el, canvas);
       el.addEventListener("pointerdown", (event) =>
         this.onPagePointerDown(event, page),
+      );
+      el.addEventListener("dblclick", (event) =>
+        this.onPageDoubleClick(event, page),
       );
       this.observer?.observe(el);
       this.renderObjects(page);
@@ -898,7 +905,7 @@ export class PdfCanvas {
       hit.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        this.beginOriginalTextEdit(page, run);
+        this.beginOriginalTextEdit(page, run, event);
       });
       overlay.appendChild(hit);
     }
@@ -907,38 +914,52 @@ export class PdfCanvas {
   private createOriginalPreview(edit: PdfiumTextEdit): HTMLDivElement {
     const preview = document.createElement("div");
     preview.className = "pc-orig-preview";
+    const fontSize = edit.fontSizeOverride ?? edit.fontSize;
+    const color = edit.colorOverride ?? edit.color;
+    const bold = edit.boldOverride ?? edit.bold;
+    const italic = edit.italicOverride ?? edit.italic;
     preview.style.left = `${edit.x * this.zoom}px`;
     preview.style.top = `${edit.y * this.zoom}px`;
     preview.style.minWidth = `${edit.w * this.zoom}px`;
     preview.style.minHeight = `${edit.h * this.zoom}px`;
-    preview.style.fontSize = `${edit.fontSize * this.zoom}px`;
+    preview.style.fontSize = `${fontSize * this.zoom}px`;
     preview.style.fontFamily = this.fontCssForRun(edit);
-    preview.style.fontWeight = edit.bold ? "700" : "400";
-    preview.style.fontStyle = edit.italic ? "italic" : "normal";
-    preview.style.color = edit.color;
+    preview.style.fontWeight = bold ? "700" : "400";
+    preview.style.fontStyle = italic ? "italic" : "normal";
+    preview.style.color = color;
     preview.style.background = edit.background;
     preview.textContent = edit.newText;
     return preview;
   }
 
-  private beginOriginalTextEdit(page: PageState, run: PdfiumTextRun) {
+  private beginOriginalTextEdit(
+    page: PageState,
+    run: PdfiumTextRun,
+    event?: PointerEvent | MouseEvent,
+  ) {
     if (this.originalEdit) this.finishOriginalEdit();
     this.beginMutation();
     const existing = this.textEdits.get(run.key);
     const background = existing?.background ?? this.sampleBackground(page, run);
+    const fontSize = existing?.fontSizeOverride ?? run.fontSize;
+    const color = existing?.colorOverride ?? run.color;
+    const bold = existing?.boldOverride ?? run.bold;
+    const italic = existing?.italicOverride ?? run.italic;
     const editor = document.createElement("div");
     editor.className = "pc-orig-editor";
     editor.contentEditable = "true";
-    editor.spellcheck = false;
+    editor.spellcheck = true;
+    editor.setAttribute("role", "textbox");
+    editor.setAttribute("aria-label", "Modifica testo originale");
     editor.style.left = `${run.x * this.zoom}px`;
     editor.style.top = `${run.y * this.zoom}px`;
     editor.style.minWidth = `${Math.max(12, run.w * this.zoom)}px`;
     editor.style.minHeight = `${Math.max(10, run.h * this.zoom)}px`;
-    editor.style.fontSize = `${run.fontSize * this.zoom}px`;
+    editor.style.fontSize = `${fontSize * this.zoom}px`;
     editor.style.fontFamily = this.fontCssForRun(run);
-    editor.style.fontWeight = run.bold ? "700" : "400";
-    editor.style.fontStyle = run.italic ? "italic" : "normal";
-    editor.style.color = run.color;
+    editor.style.fontWeight = bold ? "700" : "400";
+    editor.style.fontStyle = italic ? "italic" : "normal";
+    editor.style.color = color;
     editor.style.background = background;
     editor.textContent = existing?.newText ?? run.text;
     editor.addEventListener("paste", (event) => {
@@ -965,12 +986,56 @@ export class PdfCanvas {
       previous: existing?.newText ?? run.text,
       background,
     };
+    this.activeOriginalKey = run.key;
+    this.activeOriginalPageId = page.id;
+    this.emit("originaledit", {
+      edit:
+        existing ??
+        {
+          ...run,
+          newText: run.text,
+          originalText: run.text,
+          background,
+        },
+    });
     editor.focus({ preventScroll: true });
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
+    if (event) {
+      const placeCaret = () => {
+        if (!editor.isConnected) return;
+        const doc = document as Document & {
+          caretRangeFromPoint?: (x: number, y: number) => Range | null;
+          caretPositionFromPoint?: (
+            x: number,
+            y: number,
+          ) => { offsetNode: Node; offset: number } | null;
+        };
+        const position = doc.caretPositionFromPoint?.(
+          event.clientX,
+          event.clientY,
+        );
+        const range = position
+          ? null
+          : doc.caretRangeFromPoint?.(event.clientX, event.clientY);
+        const selection = window.getSelection();
+        if (position && editor.contains(position.offsetNode)) {
+          const point = document.createRange();
+          point.setStart(position.offsetNode, position.offset);
+          point.collapse(true);
+          selection?.removeAllRanges();
+          selection?.addRange(point);
+        } else if (range && editor.contains(range.startContainer)) {
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+        } else {
+          const end = document.createRange();
+          end.selectNodeContents(editor);
+          end.collapse(false);
+          selection?.removeAllRanges();
+          selection?.addRange(end);
+        }
+      };
+      requestAnimationFrame(placeCaret);
+    }
   }
 
   private finishOriginalEdit() {
@@ -981,19 +1046,84 @@ export class PdfCanvas {
       .replace(/\u00a0/g, " ")
       .replace(/\n$/, "");
     state.el.remove();
-    if (!text.trim() || text === state.run.text) {
+    const existing = this.textEdits.get(state.run.key);
+    const hasFormat =
+      existing &&
+      (existing.boldOverride !== undefined ||
+        existing.italicOverride !== undefined ||
+        existing.fontSizeOverride !== undefined ||
+        existing.colorOverride !== undefined);
+    if (!text.trim() || (text === state.run.text && !hasFormat)) {
       this.textEdits.delete(state.run.key);
+      this.emit("originaledit", {
+        edit: {
+          ...state.run,
+          newText: state.run.text,
+          originalText: state.run.text,
+          background: state.background,
+        },
+      });
     } else {
-      this.textEdits.set(state.run.key, {
+      const edit: PdfiumTextEdit = {
         ...state.run,
+        ...existing,
         newText: text,
         originalText: state.run.text,
         background: state.background,
-      });
+      };
+      this.textEdits.set(state.run.key, edit);
+      this.emit("originaledit", { edit });
     }
     this.commitMutation("text");
     this.renderObjects(state.page);
     this.emit("change", { reason: "text" });
+  }
+
+  /** Apply formatting overrides to the line that is being edited. */
+  updateOriginalText(
+    patch: Partial<
+      Pick<
+        PdfiumTextEdit,
+        | "boldOverride"
+        | "italicOverride"
+        | "fontSizeOverride"
+        | "colorOverride"
+      >
+    >,
+  ): void {
+    if (!this.activeOriginalKey || !this.activeOriginalPageId) return;
+    const page = this.pages.find((item) => item.id === this.activeOriginalPageId);
+    if (!page) return;
+    const run = this.textRuns
+      .get(page.id)
+      ?.find((item) => item.key === this.activeOriginalKey);
+    if (!run) return;
+    const existing = this.textEdits.get(run.key);
+    const edit: PdfiumTextEdit = {
+      ...(existing ?? {
+        ...run,
+        newText: run.text,
+        originalText: run.text,
+        background: this.sampleBackground(page, run),
+      }),
+      ...patch,
+    };
+    this.beginMutation();
+    this.textEdits.set(run.key, edit);
+    this.commitMutation("text");
+    this.renderObjects(page);
+    this.emit("originaledit", { edit });
+    this.emit("change", { reason: "text" });
+  }
+
+  clearOriginalTextFocus(): void {
+    this.activeOriginalKey = null;
+    this.activeOriginalPageId = null;
+    this.emit("originaledit", { edit: null });
+  }
+
+  getOriginalEdits(): PdfiumTextEdit[] {
+    return [...this.textEdits.values()].map((edit) => deepClone(edit));
   }
 
   private sampleBackground(page: PageState, run: PdfiumTextRun): string {
@@ -1038,12 +1168,16 @@ export class PdfCanvas {
     for (const edit of edits) {
       const page = pages.find((item) => item.sourceIndex === edit.pageIndex);
       if (!page) continue;
+      const fontSize = edit.fontSizeOverride ?? edit.fontSize;
+      const color = edit.colorOverride ?? edit.color;
+      const bold = edit.boldOverride ?? edit.bold;
+      const italic = edit.italicOverride ?? edit.italic;
       const measured = measureText(
         edit.newText,
-        edit.fontSize,
+        fontSize,
         edit.fontFamily,
-        edit.bold,
-        edit.italic,
+        bold,
+        italic,
       );
       page.objects.push({
         id: uid(),
@@ -1068,10 +1202,10 @@ export class PdfCanvas {
         opacity: 1,
         text: edit.newText,
         fontFamily: edit.fontFamily,
-        fontSize: edit.fontSize,
-        bold: edit.bold,
-        italic: edit.italic,
-        color: edit.color,
+        fontSize,
+        bold,
+        italic,
+        color,
         align: "left",
       });
     }
@@ -1121,6 +1255,7 @@ export class PdfCanvas {
   select(pageId: string | null, objectId: string | null) {
     if (this.editingState) this.finishEdit();
     if (this.originalEdit) this.finishOriginalEdit();
+    if (this.activeOriginalKey) this.clearOriginalTextFocus();
     this.selectedPageId = pageId;
     this.selectedObjectId = objectId;
     this.renderSelection();
@@ -1564,6 +1699,9 @@ export class PdfCanvas {
         (parsed.textEdits ?? []).map((edit) => [edit.key, edit]),
       );
       this.originalEdit = null;
+      this.activeOriginalKey = null;
+      this.activeOriginalPageId = null;
+      this.emit("originaledit", { edit: null });
       this.currentPageIndex = clamp(
         parsed.currentPage ?? 0,
         0,
@@ -1680,8 +1818,38 @@ export class PdfCanvas {
     };
   }
 
-  private onPagePointerDown(event: PointerEvent, page: PageState) {
-    if (event.button !== 0) return;
+  private async onPageDoubleClick(event: MouseEvent, page: PageState) {
+    if (this.tool !== "select" || page.sourceIndex === null) return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.closest(".pc-obj") ||
+      target?.closest(".pc-orig-editor") ||
+      target?.closest(".pc-orig-hit")
+    ) {
+      return;
+    }
+    const point = this.pointFromEvent(event, page);
+    try {
+      if (!this.textRuns.has(page.id)) await this.ensureTextRuns(page);
+      const run = this.textRuns
+        .get(page.id)
+        ?.find(
+          (item) =>
+            point.x >= item.x &&
+            point.x <= item.x + item.w &&
+            point.y >= item.y &&
+            point.y <= item.y + item.h,
+        );
+      if (run) {
+        event.preventDefault();
+        this.beginOriginalTextEdit(page, run, event);
+      }
+    } catch {
+      // ensureTextRuns already reports the error.
+    }
+  }
+
+  private onPagePointerDown(event: PointerEvent, page: PageState) {    if (event.button !== 0) return;
     if (this.tool === "select") {
       this.setCurrentPage(this.pages.indexOf(page));
       this.root.focus({ preventScroll: true });
@@ -2277,6 +2445,7 @@ export class PdfCanvas {
   setTool(tool: Tool) {
     if (this.editingState) this.finishEdit();
     if (this.originalEdit) this.finishOriginalEdit();
+    if (this.activeOriginalKey) this.clearOriginalTextFocus();
     this.tool = tool;
     this.root.dataset.tool = tool;
     if (tool !== "select") this.clearSelection();
