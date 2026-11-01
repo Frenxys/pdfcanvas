@@ -194,8 +194,8 @@ Events: `load`, `change`, `selectionchange`, `zoom`, `pagechange`, `error`, `exp
 
 ### Known limitations
 
-- Existing PDF text can be edited in place when it is a real text object with an encodable font. Rotated text and text inside Form XObjects are left untouched in this version.
-- If the font cannot encode the new characters, the library falls back to a background patch plus an overlay text object.
+- Existing PDF text can be edited in place when it is a real text object. Rotated text and text inside Form XObjects are left untouched in this version.
+- If the embedded font cannot encode the new characters, the library substitutes Helvetica/Times/Courier while keeping the line vector. If even that fails, it falls back to a background patch plus an overlay.
 - Existing PDF text cannot be reflowed. Cover it with the whiteout tool and type on top if you need a different layout.
 - Encrypted PDFs can be viewed but not exported until the password is removed (pdf-lib cannot decrypt).
 - Interactive form fields (AcroForm) are not copied by pdf-lib on export.
