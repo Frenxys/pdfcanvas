@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- Load PDFium text runs only for visible/current pages, not every page at once.
+
 ## 0.2.2
 
 - Commit/restore original-text edits around selection, undo/redo and page operations.

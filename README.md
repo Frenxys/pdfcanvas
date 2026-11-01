@@ -26,7 +26,7 @@
 ## Install
 
 ```bash
-npm install pdfcanvas pdfjs-dist pdf-lib
+npm install pdfcanvas pdfjs-dist pdf-lib @embedpdf/pdfium
 ```
 
 `pdfjs-dist`, `pdf-lib` and `@embedpdf/pdfium` are dependencies of the package, but installing them explicitly keeps your lockfile and worker paths obvious.

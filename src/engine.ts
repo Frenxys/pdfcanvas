@@ -549,6 +549,7 @@ export class PdfCanvas {
       this.renderTasks.set(page.id, task);
       await task.promise;
       this.renderTasks.delete(page.id);
+      if (this.tool === "text-edit") void this.ensureTextRuns(page);
     } catch (error) {
       const name = (error as { name?: string } | null)?.name;
       if (name !== "RenderingCancelledException") {
@@ -828,7 +829,12 @@ export class PdfCanvas {
     if (this.tool !== "text-edit") return;
     const runs = this.textRuns.get(page.id);
     if (!runs) {
-      void this.ensureTextRuns(page);
+      if (
+        this.visible.has(page.id) ||
+        page.id === this.pages[this.currentPageIndex]?.id
+      ) {
+        void this.ensureTextRuns(page);
+      }
       return;
     }
     for (const run of runs) {
@@ -1084,6 +1090,10 @@ export class PdfCanvas {
     if (next === this.currentPageIndex) return;
     this.currentPageIndex = next;
     this.emit("pagechange", { index: next });
+    if (this.tool === "text-edit") {
+      const page = this.pages[next];
+      if (page) void this.ensureTextRuns(page);
+    }
   }
 
   goToPage(index: number, smooth = true) {
