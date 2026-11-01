@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1
+
+- Use the visual font size (font size × text matrix scale) in previews, fallback text and line grouping.
+- Load matching Work Sans/Liberation webfonts in the editor preview, so the text you see matches the exported PDF.
+- Fixed fallback font loading with CID text objects (spaces and dashes now render correctly).
+
+## 0.4.0
+
+- Bundled **Work Sans** and **Liberation Sans** fallback fonts.
+- Match the original PDF font by name where possible; Work Sans documents keep the same family, weight and size.
+- Arial-metric Liberation Sans for other sans-serif PDFs.
+- `fontAssetsUrl` option and `/assets/fonts/` self-hosting.
+- Font-size matching from PDFium ascent/descent metrics when a substitute is required.
+
 ## 0.3.0
 
 - Group per-character/per-word PDFium objects into editable line runs.

@@ -14,6 +14,7 @@
 
 - **PDF.js rendering** with lazy pages, zoom, fit-to-width and DPR-aware canvases.
 - **Edit existing PDF text in place** with PDFium WASM, the same engine Chrome uses. Per-character PDFs are grouped into editable line runs.
+- **Font matching** with bundled Work Sans and Arial-metric Liberation Sans when the original embedded font cannot be reused.
 - **Scene objects**: text, images, rectangles, ellipses, lines, freehand pen, highlighter and whiteout.
 - **Direct manipulation**: drag, resize, centre snapping, arrow-key nudge, duplicate, z-order, delete.
 - **Text editing** in place, with font family, size, weight, style, colour and alignment.
@@ -43,6 +44,7 @@ const editor = new PdfCanvas(document.querySelector("#editor")!, {
   standardFontDataUrl: "/pdfjs/standard_fonts/",
   wasmUrl: "/pdfjs/wasm/",
   pdfiumWasmUrl: "/pdfium/pdfium.wasm",
+  fontAssetsUrl: "/fonts/",
   initialZoom: "fit-width",
 });
 
@@ -65,6 +67,7 @@ cmaps/                          -> public/pdfjs/cmaps/
 standard_fonts/                 -> public/pdfjs/standard_fonts/
 wasm/                           -> public/pdfjs/wasm/
 @embedpdf/pdfium/dist/pdfium.wasm -> public/pdfium/pdfium.wasm
+assets/fonts/                    -> public/fonts/
 ```
 
 ```ts
@@ -74,6 +77,7 @@ new PdfCanvas(el, {
   standardFontDataUrl: "/pdfjs/standard_fonts/",
   wasmUrl: "/pdfjs/wasm/",
   pdfiumWasmUrl: "/pdfium/pdfium.wasm",
+  fontAssetsUrl: "/fonts/",
 });
 ```
 
@@ -101,6 +105,7 @@ new PdfCanvas(container: HTMLElement, options?: PdfCanvasOptions)
 | `standardFontDataUrl` | `string` | — | Directory with pdf.js standard fonts. |
 | `wasmUrl` | `string` | — | Directory with pdf.js WASM decoders. |
 | `pdfiumWasmUrl` | `string` | — | PDFium WASM URL. Enables editing original text. |
+| `fontAssetsUrl` | `string` | — | URL of the bundled fallback fonts directory. |
 | `initialZoom` | `number \| "fit-width" \| "fit-page"` | `1` | Initial zoom. |
 | `minZoom` / `maxZoom` | `number` | `0.15` / `5` | Zoom limits. |
 | `historyLimit` | `number` | `60` | Undo steps kept in memory. |
@@ -214,4 +219,4 @@ npm run demo       # Vite playground on /demo/
 
 ## License
 
-MIT © Enea Zani. pdf.js is Apache-2.0, pdf-lib is MIT.
+MIT © Enea Zani. pdf.js is Apache-2.0, pdf-lib is MIT, PDFium is BSD. Bundled Work Sans and Liberation fonts are SIL OFL 1.1; their license texts are in `assets/fonts/`.

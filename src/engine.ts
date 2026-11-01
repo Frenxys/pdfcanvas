@@ -156,6 +156,7 @@ export class PdfCanvas {
     this.root.tabIndex = 0;
     this.root.dataset.tool = this.tool;
     this.root.style.setProperty("--pc-accent", options.accent ?? "#6b4eff");
+    this.injectFontFaces();
     this.viewport = document.createElement("div");
     this.viewport.className = "pc-viewport";
     this.viewport.tabIndex = -1;
@@ -747,6 +748,52 @@ export class PdfCanvas {
 
   // -------------------------------------------------------- original text
 
+  private injectFontFaces() {
+    if (!this.options.fontAssetsUrl || typeof document === "undefined") return;
+    if (document.getElementById("pdfcanvas-font-faces")) return;
+    const base = this.options.fontAssetsUrl.endsWith("/")
+      ? this.options.fontAssetsUrl
+      : `${this.options.fontAssetsUrl}/`;
+    const style = document.createElement("style");
+    style.id = "pdfcanvas-font-faces";
+    style.textContent = [
+      ["WorkSans-Regular.ttf", "400", "normal"],
+      ["WorkSans-Bold.ttf", "700", "normal"],
+      ["WorkSans-Italic.ttf", "400", "italic"],
+      ["WorkSans-BoldItalic.ttf", "700", "italic"],
+    ]
+      .map(
+        ([file, weight, fontStyle]) =>
+          `@font-face{font-family:"pc-WorkSans";src:url("${base}${file}");font-weight:${weight};font-style:${fontStyle};font-display:swap}`,
+      )
+      .concat(
+        [
+          ["LiberationSans-Regular.ttf", "400", "normal"],
+          ["LiberationSans-Bold.ttf", "700", "normal"],
+          ["LiberationSans-Italic.ttf", "400", "italic"],
+          ["LiberationSans-BoldItalic.ttf", "700", "italic"],
+        ].map(
+          ([file, weight, fontStyle]) =>
+            `@font-face{font-family:"pc-LiberationSans";src:url("${base}${file}");font-weight:${weight};font-style:${fontStyle};font-display:swap}`,
+        ),
+      )
+      .join("\n");
+    document.head.appendChild(style);
+  }
+
+  private fontCssForRun(run: PdfiumTextRun): string {
+    if (this.options.fontAssetsUrl) {
+      const name = run.fontName.toLowerCase();
+      if (/work\s*sans|worksans/.test(name)) {
+        return `"pc-WorkSans", ${FONT_CSS[run.fontFamily]}`;
+      }
+      if (/liberation|arial|helvetica/.test(name)) {
+        return `"pc-LiberationSans", ${FONT_CSS[run.fontFamily]}`;
+      }
+    }
+    return FONT_CSS[run.fontFamily];
+  }
+
   private async ensurePdfium(): Promise<PdfiumTextEngine> {
     if (this.pdfium) return this.pdfium;
     if (!this.options.pdfiumWasmUrl) {
@@ -761,6 +808,7 @@ export class PdfCanvas {
       this.pdfiumLoading = PdfiumTextEngine.create(
         this.options.pdfiumWasmUrl,
         bytes,
+        this.options.fontAssetsUrl,
       )
         .then((engine) => {
           if (generation !== this.pdfiumGeneration) {
@@ -864,7 +912,7 @@ export class PdfCanvas {
     preview.style.minWidth = `${edit.w * this.zoom}px`;
     preview.style.minHeight = `${edit.h * this.zoom}px`;
     preview.style.fontSize = `${edit.fontSize * this.zoom}px`;
-    preview.style.fontFamily = FONT_CSS[edit.fontFamily];
+    preview.style.fontFamily = this.fontCssForRun(edit);
     preview.style.fontWeight = edit.bold ? "700" : "400";
     preview.style.fontStyle = edit.italic ? "italic" : "normal";
     preview.style.color = edit.color;
@@ -887,7 +935,7 @@ export class PdfCanvas {
     editor.style.minWidth = `${Math.max(12, run.w * this.zoom)}px`;
     editor.style.minHeight = `${Math.max(10, run.h * this.zoom)}px`;
     editor.style.fontSize = `${run.fontSize * this.zoom}px`;
-    editor.style.fontFamily = FONT_CSS[run.fontFamily];
+    editor.style.fontFamily = this.fontCssForRun(run);
     editor.style.fontWeight = run.bold ? "700" : "400";
     editor.style.fontStyle = run.italic ? "italic" : "normal";
     editor.style.color = run.color;
@@ -1048,6 +1096,7 @@ export class PdfCanvas {
       const engine = await PdfiumTextEngine.create(
         this.options.pdfiumWasmUrl,
         new Uint8Array(this.sourceBytes),
+        this.options.fontAssetsUrl,
       );
       try {
         const result = engine.applyEdits(edits);

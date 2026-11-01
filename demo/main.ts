@@ -8,6 +8,7 @@ if (!container) throw new Error("Missing #editor");
 const editor = new PdfCanvas(container, {
   workerSrc: workerUrl,
   pdfiumWasmUrl,
+  fontAssetsUrl: "/assets/fonts/",
   initialZoom: "fit-width",
   onError: (error) => console.error("[demo]", error),
 });

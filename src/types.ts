@@ -109,6 +109,12 @@ export interface PdfCanvasOptions {
    * Without it, only overlay editing is available.
    */
   pdfiumWasmUrl?: string;
+  /**
+   * URL of the bundled fallback fonts directory (trailing slash), normally
+   * `/fonts/` copied from `pdfcanvas/assets/fonts/`. Enables Arial-metric
+   * replacement with Liberation Sans.
+   */
+  fontAssetsUrl?: string;
   /** Initial zoom. `fit-width` works once the container is visible. */
   initialZoom?: number | "fit-width" | "fit-page";
   minZoom?: number;

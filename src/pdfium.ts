@@ -11,7 +11,9 @@ export interface PdfiumTextMember {
   w: number;
   h: number;
   fontPtr: number;
+  fontName: string;
   fontSize: number;
+  textFontSize: number;
   fontFamily: FontFamily;
   bold: boolean;
   italic: boolean;
@@ -30,7 +32,9 @@ export interface PdfiumTextRun {
   w: number;
   h: number;
   fontSize: number;
+  textFontSize: number;
   fontFamily: FontFamily;
+  fontName: string;
   bold: boolean;
   italic: boolean;
   color: string;
@@ -81,6 +85,9 @@ export class PdfiumTextEngine {
   private readonly textPages = new Map<number, number>();
   private readonly boxes = new Map<number, PageBox>();
   private readonly runCache = new Map<number, PdfiumTextRun[]>();
+  private readonly loadedFonts: Array<{ fontPtr: number; dataPtr: number }> = [];
+  private readonly fallbackFontData = new Map<string, Uint8Array>();
+  private readonly fallbackFontPtrs = new Map<string, number>();
   private destroyed = false;
 
   private constructor(
@@ -98,6 +105,7 @@ export class PdfiumTextEngine {
   static async create(
     wasmUrl: string,
     bytes: Uint8Array,
+    fontAssetsUrl?: string,
   ): Promise<PdfiumTextEngine> {
     const { init } = await import("@embedpdf/pdfium");
     const m = await init({ locateFile: () => wasmUrl });
@@ -121,7 +129,37 @@ export class PdfiumTextEngine {
           : "PDFium non riesce ad aprire questo PDF.";
       throw new Error(`${reason} (codice ${code}).`);
     }
-    return new PdfiumTextEngine(m, docPtr, dataPtr, new Uint8Array(bytes));
+    const engine = new PdfiumTextEngine(m, docPtr, dataPtr, new Uint8Array(bytes));
+    if (fontAssetsUrl) await engine.loadFallbackFonts(fontAssetsUrl);
+    return engine;
+  }
+
+  private async loadFallbackFonts(baseUrl: string): Promise<void> {
+    const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+    const files = [
+      "LiberationSans-Regular.ttf",
+      "LiberationSans-Bold.ttf",
+      "LiberationSans-Italic.ttf",
+      "LiberationSans-BoldItalic.ttf",
+      "WorkSans-Regular.ttf",
+      "WorkSans-Bold.ttf",
+      "WorkSans-Italic.ttf",
+      "WorkSans-BoldItalic.ttf",
+    ];
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          const response = await fetch(`${base}${file}`);
+          if (!response.ok) return;
+          this.fallbackFontData.set(
+            file.replace(/\.ttf$/i, "").toLowerCase(),
+            new Uint8Array(await response.arrayBuffer()),
+          );
+        } catch {
+          // Fonts are optional; standard PDF fonts remain the final fallback.
+        }
+      }),
+    );
   }
 
   /** Text objects of a page, in display coordinates (rotation 0 only). */
@@ -139,7 +177,14 @@ export class PdfiumTextEngine {
     const charCount = this.m.FPDFText_CountChars(textPage);
     let lastStyle: Pick<
       RawChar,
-      "fontSize" | "fontFamily" | "bold" | "italic" | "color" | "fontPtr"
+      | "fontSize"
+      | "textFontSize"
+      | "fontFamily"
+      | "fontName"
+      | "bold"
+      | "italic"
+      | "color"
+      | "fontPtr"
     > | null = null;
     for (let index = 0; index < charCount; index += 1) {
       const codePoint = this.m.FPDFText_GetUnicode(textPage, index);
@@ -167,14 +212,26 @@ export class PdfiumTextEngine {
       if (!boxed) continue;
       let style: Pick<
         RawChar,
-        "fontSize" | "fontFamily" | "bold" | "italic" | "color" | "fontPtr"
+        | "fontSize"
+        | "textFontSize"
+        | "fontFamily"
+        | "fontName"
+        | "bold"
+        | "italic"
+        | "color"
+        | "fontPtr"
       > | null = lastStyle;
       if (objPtr) {
-        const fontSize = Math.max(1, this.objectFontSize(objPtr, bottom, top));
+        const textFontSize = Math.max(
+          1,
+          this.objectFontSize(objPtr, bottom, top),
+        );
         const font = this.objectFontInfo(objPtr);
         style = {
-          fontSize,
+          fontSize: textFontSize,
+          textFontSize,
           fontFamily: font.fontFamily,
+          fontName: font.fontName,
           bold: font.bold,
           italic: font.italic,
           color: this.objectColor(objPtr),
@@ -187,6 +244,8 @@ export class PdfiumTextEngine {
       if (!matrix || Math.abs(matrix.b) > 0.001 || Math.abs(matrix.c) > 0.001) {
         continue;
       }
+      const scale = Math.hypot(matrix.a, matrix.b) || 1;
+      const visualFontSize = Math.max(1, style.textFontSize * scale);
       raw.push({
         pageIndex,
         objPtr,
@@ -195,8 +254,10 @@ export class PdfiumTextEngine {
         y: box.top - top,
         w: Math.max(0.1, right - left),
         h: Math.max(0.1, top - bottom),
-        fontSize: style.fontSize,
+        fontSize: visualFontSize,
+        textFontSize: style.textFontSize,
         fontFamily: style.fontFamily,
+        fontName: style.fontName,
         bold: style.bold,
         italic: style.italic,
         color: style.color,
@@ -250,7 +311,76 @@ export class PdfiumTextEngine {
     edit: PdfiumTextEdit,
   ): boolean {
     if (this.applyExistingRun(pagePtr, pageIndex, run, edit)) return true;
-    return this.applyStandardFontRun(pagePtr, pageIndex, run, edit);
+    const target =
+      run.members.find((member) => member.text.trim().length > 0) ??
+      run.members[0];
+    if (target) {
+      const embeddedFont = this.loadEmbeddedFont(target.fontPtr);
+      if (
+        embeddedFont &&
+        this.applyReplacementRun(pagePtr, pageIndex, run, edit, embeddedFont)
+      ) {
+        return true;
+      }
+      const fallbackFont = this.loadFallbackFont(run);
+      if (
+        fallbackFont &&
+        this.applyReplacementRun(pagePtr, pageIndex, run, edit, fallbackFont)
+      ) {
+        return true;
+      }
+    }
+    const standardFont = this.m.FPDFText_LoadStandardFont(
+      this.docPtr,
+      standardFontName(run),
+    );
+    if (!standardFont) return false;
+    return this.applyReplacementRun(pagePtr, pageIndex, run, edit, standardFont);
+  }
+
+  private loadFallbackFont(run: PdfiumTextRun): number | null {
+    let family: string;
+    if (/work\s*sans|worksans/i.test(run.fontName)) {
+      family = "worksans";
+    } else if (run.fontFamily === "helvetica") {
+      family = "liberationsans";
+    } else {
+      return null;
+    }
+    const style = run.bold
+      ? run.italic
+        ? "bolditalic"
+        : "bold"
+      : run.italic
+        ? "italic"
+        : "regular";
+    const key = `${family}-${style}`;
+    const cached = this.fallbackFontPtrs.get(key);
+    if (cached) return cached;
+    const data = this.fallbackFontData.get(key);
+    if (!data) return null;
+    const dataPtr = this.m.pdfium.wasmExports.malloc(data.length);
+    if (!dataPtr) return null;
+    try {
+      heapOf(this.m).set(data, dataPtr);
+      const fontPtr = this.m.FPDFText_LoadFont(
+        this.docPtr,
+        dataPtr,
+        data.length,
+        2,
+        true,
+      );
+      if (!fontPtr) {
+        this.m.pdfium.wasmExports.free(dataPtr);
+        return null;
+      }
+      this.loadedFonts.push({ fontPtr, dataPtr });
+      this.fallbackFontPtrs.set(key, fontPtr);
+      return fontPtr;
+    } catch {
+      this.m.pdfium.wasmExports.free(dataPtr);
+      return null;
+    }
   }
 
   private applyExistingRun(
@@ -334,27 +464,85 @@ export class PdfiumTextEngine {
   }
 
   /**
-   * Last-resort vector fallback: replace the run with a standard PDF font.
-   * This loses the original font but keeps the edited text real, selectable
-   * and editable. Unsupported characters still fail and fall back to overlay.
+   * Best-effort exact match: reload the embedded font from the PDF and use it
+   * for a new text object. Subset fonts that lack a usable cmap will fail the
+   * round-trip check and fall through to the standard-font path.
    */
-  private applyStandardFontRun(
+  private loadEmbeddedFont(fontPtr: number): number | null {
+    if (!fontPtr) return null;
+    const sizePtr = this.m.pdfium.wasmExports.malloc(4);
+    if (!sizePtr) return null;
+    let size = 0;
+    try {
+      if (!this.m.FPDFFont_GetFontData(fontPtr, 0, 0, sizePtr)) {
+        this.m.pdfium.wasmExports.free(sizePtr);
+        return null;
+      }
+      size = this.m.pdfium.getValue(sizePtr, "i32");
+    } finally {
+      this.m.pdfium.wasmExports.free(sizePtr);
+    }
+    if (!size || size < 0) return null;
+    const dataPtr = this.m.pdfium.wasmExports.malloc(size);
+    if (!dataPtr) return null;
+    try {
+      const outPtr = this.m.pdfium.wasmExports.malloc(4);
+      if (!outPtr) {
+        this.m.pdfium.wasmExports.free(dataPtr);
+        return null;
+      }
+      let ok = false;
+      try {
+        ok = this.m.FPDFFont_GetFontData(fontPtr, dataPtr, size, outPtr);
+      } finally {
+        this.m.pdfium.wasmExports.free(outPtr);
+      }
+      if (!ok) {
+        this.m.pdfium.wasmExports.free(dataPtr);
+        return null;
+      }
+      let loaded = this.m.FPDFText_LoadFont(
+        this.docPtr,
+        dataPtr,
+        size,
+        2,
+        false,
+      );
+      if (!loaded) {
+        loaded = this.m.FPDFText_LoadFont(this.docPtr, dataPtr, size, 1, false);
+      }
+      if (!loaded) {
+        this.m.pdfium.wasmExports.free(dataPtr);
+        return null;
+      }
+      this.loadedFonts.push({ fontPtr: loaded, dataPtr });
+      return loaded;
+    } catch {
+      this.m.pdfium.wasmExports.free(dataPtr);
+      return null;
+    }
+  }
+
+  private applyReplacementRun(
     pagePtr: number,
     pageIndex: number,
     run: PdfiumTextRun,
     edit: PdfiumTextEdit,
+    fontPtr: number,
   ): boolean {
     const target =
       run.members.find((member) => member.text.trim().length > 0) ??
       run.members[0];
     if (!target) return false;
-    const fontName = standardFontName(run);
-    const fontPtr = this.m.FPDFText_LoadStandardFont(this.docPtr, fontName);
-    if (!fontPtr) return false;
+    const replacementSize = this.matchFontSize(
+      target.fontPtr,
+      fontPtr,
+      target.textFontSize || run.textFontSize || run.fontSize,
+    );
     const objectPtr = this.m.FPDFPageObj_CreateTextObj(
       this.docPtr,
       fontPtr,
-      run.fontSize,
+      replacementSize,
     );
     if (!objectPtr) return false;
     const textPtr = this.writeUtf16(edit.newText);
@@ -383,7 +571,7 @@ export class PdfiumTextEngine {
       if (
         normaliseText(roundTrip) !== normaliseText(edit.newText) ||
         !bbox ||
-        isCollapsed(bbox, edit.newText, edit.fontSize)
+        isCollapsed(bbox, edit.newText, run.fontSize)
       ) {
         this.m.FPDFPage_RemoveObject(pagePtr, objectPtr);
         this.m.FPDFPageObj_Destroy(objectPtr);
@@ -416,6 +604,39 @@ export class PdfiumTextEngine {
       throw error;
     } finally {
       this.m.pdfium.wasmExports.free(textPtr);
+    }
+  }
+
+  private matchFontSize(
+    originalFontPtr: number,
+    replacementFontPtr: number,
+    size: number,
+  ): number {
+    const original = this.fontHeight(originalFontPtr, size);
+    const replacement = this.fontHeight(replacementFontPtr, size);
+    if (!original || !replacement || original <= 0 || replacement <= 0) {
+      return size;
+    }
+    const matched = size * (original / replacement);
+    return Math.min(size * 1.3, Math.max(size * 0.8, matched));
+  }
+
+  private fontHeight(fontPtr: number, size: number): number | null {
+    if (!fontPtr) return null;
+    const ptr = this.m.pdfium.wasmExports.malloc(8);
+    if (!ptr) return null;
+    try {
+      const ascentOk = this.m.FPDFFont_GetAscent(fontPtr, size, ptr);
+      const descentOk = this.m.FPDFFont_GetDescent(fontPtr, size, ptr + 4);
+      if (!ascentOk || !descentOk) return null;
+      const ascent = this.f32(ptr);
+      const descent = this.f32(ptr + 4);
+      const height = ascent - descent;
+      return height > 0 && Number.isFinite(height) ? height : null;
+    } catch {
+      return null;
+    } finally {
+      this.m.pdfium.wasmExports.free(ptr);
     }
   }
 
@@ -458,6 +679,15 @@ export class PdfiumTextEngine {
     if (this.destroyed) return;
     this.destroyed = true;
     try {
+      for (const loaded of this.loadedFonts) {
+        try {
+          this.m.FPDFFont_Close(loaded.fontPtr);
+        } catch {
+          // Ignore.
+        }
+        this.m.pdfium.wasmExports.free(loaded.dataPtr);
+      }
+      this.loadedFonts.length = 0;
       for (const textPage of this.textPages.values()) {
         this.m.FPDFText_ClosePage(textPage);
       }
@@ -585,6 +815,7 @@ export class PdfiumTextEngine {
   private objectFontInfo(objPtr: number): {
     fontPtr: number;
     fontFamily: FontFamily;
+    fontName: string;
     bold: boolean;
     italic: boolean;
   } {
@@ -614,6 +845,7 @@ export class PdfiumTextEngine {
     return {
       fontPtr,
       fontFamily,
+      fontName: base || family,
       bold: weight >= 600 || /bold|black|heavy/.test(name),
       italic: /italic|oblique/.test(name),
     };
@@ -771,6 +1003,7 @@ function groupChars(chars: RawChar[]): PdfiumTextRun[] {
       !current ||
       Math.abs(current.fontSize - char.fontSize) > 0.6 ||
       current.fontFamily !== char.fontFamily ||
+      current.fontName !== char.fontName ||
       current.bold !== char.bold ||
       current.italic !== char.italic ||
       current.color !== char.color ||
@@ -790,7 +1023,9 @@ function groupChars(chars: RawChar[]): PdfiumTextRun[] {
         w: char.w,
         h: char.h,
         fontSize: char.fontSize,
+        textFontSize: char.textFontSize,
         fontFamily: char.fontFamily,
+        fontName: char.fontName,
         bold: char.bold,
         italic: char.italic,
         color: char.color,
