@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pdfcanvas — vanilla demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #191722;
+        --accent: #6b4eff;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        flex-direction: column;
+        font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--ink);
+        background: #f4f1ea;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        padding: 10px 16px;
+        background: #fff;
+        border-bottom: 1px solid #e6e1d7;
+      }
+      header strong { margin-right: 8px; letter-spacing: -0.02em; }
+      button, label.button {
+        appearance: none;
+        border: 1px solid #ded8cc;
+        background: #fff;
+        color: inherit;
+        border-radius: 9px;
+        padding: 7px 12px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover, label.button:hover { border-color: var(--accent); color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      input[type="file"] { display: none; }
+      #editor { flex: 1; min-height: 0; }
+      #editor > * { height: 100%; }
+      .hint { margin-left: auto; font-size: 12px; color: #77716a; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>pdfcanvas</strong>
+      <label class="button">
+        Open PDF
+        <input id="pdf-input" type="file" accept="application/pdf" />
+      </label>
+      <button id="text">Add text</button>
+      <label class="button">
+        Add image
+        <input id="image-input" type="file" accept="image/*" />
+      </label>
+      <button id="undo">Undo</button>
+      <button id="redo">Redo</button>
+      <button id="save" class="primary">Download PDF</button>
+      <span class="hint">Drop a PDF anywhere · Ctrl+wheel to zoom</span>
+    </header>
+    <main id="editor"></main>
+    <script type="module" src="/demo/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+export { PdfCanvas } from "./engine";
+export { buildPdf } from "./export";
+export { STYLES } from "./styles";
+export {
+  displayToPdf,
+  displayRectToPdf,
+  downloadBytes,
+  outputFileName,
+  pdfjsVersion,
+} from "./utils";
+export type {
+  AddImageOptions,
+  AddShapeOptions,
+  AddTextOptions,
+  ChangeReason,
+  ExportOptions,
+  FontFamily,
+  PageInfo,
+  PdfCanvasEventMap,
+  PdfCanvasOptions,
+  PdfCanvasState,
+  PdfSource,
+  SceneObject,
+  TextObject,
+  ImageObject,
+  ShapeObject,
+  LineObject,
+  PenObject,
+  TextAlign,
+  Thumbnail,
+  Tool,
+} from "./types";

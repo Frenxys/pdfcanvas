@@ -1,0 +1,209 @@
+# pdfcanvas
+
+**A client-side PDF editor engine for the browser.** Render PDFs with pdf.js, place Canva-style objects on top, move pages around, then export a real vector PDF with pdf-lib. No server, no upload, no license key.
+
+[![npm](https://img.shields.io/npm/v/pdfcanvas.svg)](https://www.npmjs.com/package/pdfcanvas)
+[![license](https://img.shields.io/npm/l/pdfcanvas.svg)](./LICENSE)
+
+- Website / playground: https://pdf.eneawork.it
+- Source: https://github.com/Frenxys/pdfcanvas
+
+> Status: `0.1.x`. The editing model and public API are usable but may still change.
+
+## Features
+
+- **PDF.js rendering** with lazy pages, zoom, fit-to-width and DPR-aware canvases.
+- **Scene objects**: text, images, rectangles, ellipses, lines, freehand pen, highlighter and whiteout.
+- **Direct manipulation**: drag, resize, centre snapping, arrow-key nudge, duplicate, z-order, delete.
+- **Text editing** in place, with font family, size, weight, style, colour and alignment.
+- **Page management**: insert blank pages, delete, reorder, rotate.
+- **Undo / redo** with snapshots (object and page operations).
+- **Vector export**: original pages stay vector; overlays are drawn as PDF text, shapes and images.
+- **Everything local**: the PDF never leaves the browser. The worker is self-hosted by the app.
+- **Framework agnostic**: plain TypeScript + DOM. React, Vue, Svelte or vanilla.
+
+## Install
+
+```bash
+npm install pdfcanvas pdfjs-dist pdf-lib
+```
+
+`pdfjs-dist` and `pdf-lib` are dependencies of the package, but installing them explicitly keeps your lockfile and worker paths obvious.
+
+## Quick start
+
+```ts
+import { PdfCanvas } from "pdfcanvas";
+
+const editor = new PdfCanvas(document.querySelector("#editor")!, {
+  // Required: self-host the pdf.js worker (see below).
+  workerSrc: "/pdfjs/pdf.worker.min.mjs",
+  cMapUrl: "/pdfjs/cmaps/",
+  standardFontDataUrl: "/pdfjs/standard_fonts/",
+  wasmUrl: "/pdfjs/wasm/",
+  initialZoom: "fit-width",
+});
+
+await editor.load(file);            // File | Blob | ArrayBuffer | Uint8Array | URL
+editor.addText(80, 120, { text: "Hello", fontSize: 24, color: "#6b4eff" });
+editor.addShape("rect", { x: 80, y: 180, width: 200, height: 90 });
+await editor.download();            // downloads "file-pdfcanvas.pdf"
+```
+
+The `#editor` element needs a height (for example `height: 100vh` or a flex child with `min-height: 0`).
+
+### Self-host the pdf.js worker
+
+Copy these from `node_modules/pdfjs-dist` to a public folder:
+
+```text
+build/pdf.worker.min.mjs        -> public/pdfjs/pdf.worker.min.mjs
+cmaps/                          -> public/pdfjs/cmaps/
+standard_fonts/                 -> public/pdfjs/standard_fonts/
+wasm/                           -> public/pdfjs/wasm/
+```
+
+```ts
+new PdfCanvas(el, {
+  workerSrc: "/pdfjs/pdf.worker.min.mjs",
+  cMapUrl: "/pdfjs/cmaps/",
+  standardFontDataUrl: "/pdfjs/standard_fonts/",
+  wasmUrl: "/pdfjs/wasm/",
+});
+```
+
+A bundler can also emit the worker URL for you:
+
+```ts
+import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+new PdfCanvas(el, { workerSrc: workerUrl });
+```
+
+The worker is **never** loaded from a CDN by the library, so documents stay on the user's device.
+
+## API
+
+### Constructor
+
+```ts
+new PdfCanvas(container: HTMLElement, options?: PdfCanvasOptions)
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `workerSrc` | `string` | — | **Required.** pdf.js worker URL. |
+| `cMapUrl` | `string` | — | Directory with pdf.js CMaps. |
+| `standardFontDataUrl` | `string` | — | Directory with pdf.js standard fonts. |
+| `wasmUrl` | `string` | — | Directory with pdf.js WASM decoders. |
+| `initialZoom` | `number \| "fit-width" \| "fit-page"` | `1` | Initial zoom. |
+| `minZoom` / `maxZoom` | `number` | `0.15` / `5` | Zoom limits. |
+| `historyLimit` | `number` | `60` | Undo steps kept in memory. |
+| `maxFileSize` | `number` | `200 MB` | Maximum accepted PDF size, in bytes. |
+| `accent` | `string` | `#6b4eff` | Selection UI colour. |
+| `onError` | `(error: Error) => void` | — | Non-fatal error hook. |
+
+### Loading and exporting
+
+```ts
+await editor.load(source, { fileName?: string });
+const bytes = await editor.exportPdf({ fileName?: string });
+await editor.download();
+editor.getState();          // serialisable snapshot of the editor
+editor.getPages();          // [{ id, index, width, height, rotation, objectCount }]
+await editor.getThumbnails(140);
+editor.destroy();
+```
+
+### Objects
+
+```ts
+editor.addText(x, y, options);
+await editor.addImage(dataUrlOrUrl, options);
+await editor.addImageFile(file);
+await editor.addSignature(pngDataUrl);
+editor.addShape("rect" | "ellipse", options);
+
+editor.updateSelected({ color: "#ff5b4a", fontSize: 28 });
+editor.duplicateSelected();
+editor.deleteSelected();
+editor.bringForward();
+editor.sendBackward();
+```
+
+### Pages and history
+
+```ts
+await editor.addBlankPage(afterIndex);
+editor.deletePage(index);
+editor.rotatePage(index, 90);
+editor.movePage(from, to);
+editor.goToPage(index);
+
+editor.undo();
+editor.redo();
+```
+
+### Zoom and tools
+
+```ts
+editor.setTool("select" | "text" | "image" | "rect" | "ellipse" | "line" | "pen" | "highlight" | "whiteout");
+editor.setZoom(1.25);
+editor.zoomIn();
+editor.zoomOut();
+editor.fitWidth();
+editor.fitPage();
+```
+
+### Events
+
+```ts
+const off = editor.on("change", ({ reason }) => {
+  console.log("changed", reason);
+});
+```
+
+Events: `load`, `change`, `selectionchange`, `zoom`, `pagechange`, `error`, `export`, `save` (`Ctrl/Cmd+S`).
+
+### Keyboard shortcuts
+
+| Keys | Action |
+| --- | --- |
+| `V` / `T` / `I` / `R` / `O` / `L` / `P` / `H` / `W` | Select / text / image / rectangle / ellipse / line / pen / highlight / whiteout |
+| `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` | Undo / redo |
+| `Ctrl/Cmd+D` | Duplicate |
+| `Ctrl/Cmd+S` | Emit `save` |
+| `Ctrl/Cmd+=`, `Ctrl/Cmd+-`, `Ctrl/Cmd+0` | Zoom in / out / fit width |
+| `Ctrl/Cmd` + wheel | Zoom at pointer |
+| Arrows, `Shift` + arrows | Nudge 1 pt / 10 pt |
+| `Delete` | Delete selection |
+| `Escape` | Back to select / clear selection |
+| `PageUp`, `PageDown` | Previous / next page |
+
+## What is preserved in the export
+
+- Original page content stays vector and selectable.
+- Text, shapes, images and ink are written as native PDF content.
+- Page order, inserted blank pages and rotation are applied.
+- Text with glyphs outside WinAnsi (for example CJK or emoji) is rasterised at 3× so it still looks right.
+
+### Known limitations
+
+- Existing PDF text cannot be reflowed. Cover it with the whiteout tool and type on top (this is the same approach as many browser editors).
+- Encrypted PDFs can be viewed but not exported until the password is removed (pdf-lib cannot decrypt).
+- Interactive form fields (AcroForm) are not copied by pdf-lib on export.
+- Crop-box offsets other than `(0, 0)` are normalised to the media box.
+- Object-level rotation is not implemented yet; page rotation is.
+
+## Development
+
+```bash
+npm install
+npm run typecheck
+npm run build
+npm run sample     # writes demo/sample.pdf
+npm run demo       # Vite playground on /demo/
+```
+
+## License
+
+MIT © Enea Zani. pdf.js is Apache-2.0, pdf-lib is MIT.
