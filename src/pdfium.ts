@@ -2,6 +2,23 @@ import type { WrappedPdfiumModule } from "@embedpdf/pdfium";
 
 import type { FontFamily } from "./types";
 
+/** One backing PDFium text object inside a grouped run. */
+export interface PdfiumTextMember {
+  objPtr: number;
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fontPtr: number;
+  fontSize: number;
+  fontFamily: FontFamily;
+  bold: boolean;
+  italic: boolean;
+  color: string;
+  matrix: { a: number; b: number; c: number; d: number; e: number; f: number };
+}
+
 /** A text object that exists in the original PDF and can be edited in place. */
 export interface PdfiumTextRun {
   key: string;
@@ -17,6 +34,12 @@ export interface PdfiumTextRun {
   bold: boolean;
   italic: boolean;
   color: string;
+  /** A line may be built from many per-character PDFium objects. */
+  members: PdfiumTextMember[];
+}
+
+interface RawChar extends PdfiumTextMember {
+  pageIndex: number;
 }
 
 /** A pending edit for an original text object. */
@@ -40,8 +63,6 @@ interface PageBox {
   height: number;
 }
 
-const FPDF_PAGEOBJ_TEXT = 1;
-const FPDF_PAGEOBJ_FORM = 5;
 const MIN_INK_EM_PER_CHAR = 0.15;
 
 /**
@@ -114,19 +135,76 @@ export class PdfiumTextEngine {
     const textPage = this.textPage(pageIndex);
     if (!textPage) return [];
 
-    const runs: PdfiumTextRun[] = [];
-    const count = this.m.FPDFPage_CountObjects(pagePtr);
-    for (let index = 0; index < count; index += 1) {
-      const objPtr = this.m.FPDFPage_GetObject(pagePtr, index);
-      if (!objPtr) continue;
-      const type = this.m.FPDFPageObj_GetType(objPtr);
-      // Form XObjects need their own matrix applied. Skip them in this first
-      // version instead of drawing misplaced boxes.
-      if (type === FPDF_PAGEOBJ_FORM) continue;
-      if (type !== FPDF_PAGEOBJ_TEXT) continue;
-      const run = this.readTextObject(objPtr, textPage, pageIndex, box);
-      if (run) runs.push(run);
+    const raw: RawChar[] = [];
+    const charCount = this.m.FPDFText_CountChars(textPage);
+    let lastStyle: Pick<
+      RawChar,
+      "fontSize" | "fontFamily" | "bold" | "italic" | "color" | "fontPtr"
+    > | null = null;
+    for (let index = 0; index < charCount; index += 1) {
+      const codePoint = this.m.FPDFText_GetUnicode(textPage, index);
+      if (!codePoint || codePoint === 0x0a || codePoint === 0x0d) continue;
+      const text = String.fromCodePoint(codePoint);
+      const objPtr = this.m.FPDFText_GetTextObject(textPage, index);
+      const rectPtr = this.m.pdfium.wasmExports.malloc(16);
+      if (!rectPtr) continue;
+      let left = 0;
+      let top = 0;
+      let right = 0;
+      let bottom = 0;
+      let boxed = false;
+      try {
+        boxed = this.m.FPDFText_GetLooseCharBox(textPage, index, rectPtr);
+        if (boxed) {
+          left = this.f32(rectPtr);
+          top = this.f32(rectPtr + 4);
+          right = this.f32(rectPtr + 8);
+          bottom = this.f32(rectPtr + 12);
+        }
+      } finally {
+        this.m.pdfium.wasmExports.free(rectPtr);
+      }
+      if (!boxed) continue;
+      let style: Pick<
+        RawChar,
+        "fontSize" | "fontFamily" | "bold" | "italic" | "color" | "fontPtr"
+      > | null = lastStyle;
+      if (objPtr) {
+        const fontSize = Math.max(1, this.objectFontSize(objPtr, bottom, top));
+        const font = this.objectFontInfo(objPtr);
+        style = {
+          fontSize,
+          fontFamily: font.fontFamily,
+          bold: font.bold,
+          italic: font.italic,
+          color: this.objectColor(objPtr),
+          fontPtr: font.fontPtr,
+        };
+        lastStyle = style;
+      }
+      if (!style) continue;
+      const matrix = objPtr ? this.objectMatrix(objPtr) : null;
+      if (!matrix || Math.abs(matrix.b) > 0.001 || Math.abs(matrix.c) > 0.001) {
+        continue;
+      }
+      raw.push({
+        pageIndex,
+        objPtr,
+        text,
+        x: left - box.left,
+        y: box.top - top,
+        w: Math.max(0.1, right - left),
+        h: Math.max(0.1, top - bottom),
+        fontSize: style.fontSize,
+        fontFamily: style.fontFamily,
+        bold: style.bold,
+        italic: style.italic,
+        color: style.color,
+        fontPtr: style.fontPtr,
+        matrix,
+      });
     }
+    const runs = groupChars(raw);
     this.runCache.set(pageIndex, runs);
     return runs;
   }
@@ -152,51 +230,216 @@ export class PdfiumTextEngine {
         failed.push(edit);
         continue;
       }
-      const ok = this.setObjectText(run.objPtr, edit.newText);
-      if (!ok) {
-        this.setObjectText(run.objPtr, edit.originalText);
+      if (this.applyRun(pagePtr, edit.pageIndex, run, edit)) {
+        applied += 1;
+      } else {
         failed.push(edit);
-        continue;
       }
-      // PDFium applies the text to the object only when the content stream is
-      // regenerated. Regenerate, then read through a fresh text page. This
-      // catches fonts that silently map unsupported code points to filler.
-      if (!this.m.FPDFPage_GenerateContent(pagePtr)) {
-        throw new Error("PDFium: impossibile rigenerare la pagina.");
-      }
-      this.reloadTextPage(edit.pageIndex);
-      const textPage = this.textPage(edit.pageIndex);
-      const roundTrip = textPage ? this.objectText(run.objPtr, textPage) : "";
-      if (normaliseText(roundTrip) !== normaliseText(edit.newText)) {
-        this.setObjectText(run.objPtr, edit.originalText);
-        this.m.FPDFPage_GenerateContent(pagePtr);
-        this.reloadTextPage(edit.pageIndex);
-        failed.push(edit);
-        continue;
-      }
-      const bbox = this.objectBounds(run.objPtr);
-      const visible = edit.newText.replace(/\s+/gu, "").length;
-      const collapsed =
-        bbox !== null &&
-        visible > 0 &&
-        edit.fontSize > 0 &&
-        bbox.right - bbox.left < visible * edit.fontSize * MIN_INK_EM_PER_CHAR;
-      if (collapsed || !bbox) {
-        // The font could not encode some characters and PDFium replaced them
-        // with zero-width glyphs. Restore and let the overlay fallback handle it.
-        this.setObjectText(run.objPtr, edit.originalText);
-        this.m.FPDFPage_GenerateContent(pagePtr);
-        this.reloadTextPage(edit.pageIndex);
-        failed.push(edit);
-        continue;
-      }
-      applied += 1;
     }
 
     if (applied === 0) {
       return { bytes: this.openedBytes, failed };
     }
     return { bytes: this.save(), failed };
+  }
+
+  private applyRun(
+    pagePtr: number,
+    pageIndex: number,
+    run: PdfiumTextRun,
+    edit: PdfiumTextEdit,
+  ): boolean {
+    if (this.applyExistingRun(pagePtr, pageIndex, run, edit)) return true;
+    return this.applyStandardFontRun(pagePtr, pageIndex, run, edit);
+  }
+
+  private applyExistingRun(
+    pagePtr: number,
+    pageIndex: number,
+    run: PdfiumTextRun,
+    edit: PdfiumTextEdit,
+  ): boolean {
+    if (run.members.length <= 1) {
+      const member = run.members[0];
+      if (!member) return false;
+      if (!this.setObjectText(member.objPtr, edit.newText)) {
+        this.setObjectText(member.objPtr, edit.originalText);
+        return false;
+      }
+      if (!this.m.FPDFPage_GenerateContent(pagePtr)) {
+        throw new Error("PDFium: impossibile rigenerare la pagina.");
+      }
+      this.reloadTextPage(pageIndex);
+      const textPage = this.textPage(pageIndex);
+      const roundTrip = textPage ? this.objectText(member.objPtr, textPage) : "";
+      if (normaliseText(roundTrip) !== normaliseText(edit.newText)) {
+        this.setObjectText(member.objPtr, edit.originalText);
+        this.m.FPDFPage_GenerateContent(pagePtr);
+        this.reloadTextPage(pageIndex);
+        return false;
+      }
+      const bbox = this.objectBounds(member.objPtr);
+      if (!bbox || isCollapsed(bbox, edit.newText, edit.fontSize)) {
+        this.setObjectText(member.objPtr, edit.originalText);
+        this.m.FPDFPage_GenerateContent(pagePtr);
+        this.reloadTextPage(pageIndex);
+        return false;
+      }
+      return true;
+    }
+
+    // A line assembled from many per-character objects: write the full text
+    // into the first non-space object and blank the others. This keeps the
+    // original font, matrix and color instead of creating a new font object.
+    const target =
+      run.members.find((member) => member.text.trim().length > 0) ??
+      run.members[0];
+    if (!target) return false;
+    const originals = run.members.map((member) => ({
+      member,
+      text: member.text,
+    }));
+    if (!this.setObjectText(target.objPtr, edit.newText)) return false;
+    for (const member of run.members) {
+      if (member.objPtr === target.objPtr) continue;
+      if (!this.setObjectText(member.objPtr, " ")) {
+        for (const original of originals) {
+          this.setObjectText(original.member.objPtr, original.text);
+        }
+        this.m.FPDFPage_GenerateContent(pagePtr);
+        this.reloadTextPage(pageIndex);
+        return false;
+      }
+    }
+    if (!this.m.FPDFPage_GenerateContent(pagePtr)) {
+      throw new Error("PDFium: impossibile rigenerare la pagina.");
+    }
+    this.reloadTextPage(pageIndex);
+    const textPage = this.textPage(pageIndex);
+    const roundTrip = textPage ? this.objectText(target.objPtr, textPage) : "";
+    const bbox = this.objectBounds(target.objPtr);
+    if (
+      normaliseText(roundTrip) !== normaliseText(edit.newText) ||
+      !bbox ||
+      isCollapsed(bbox, edit.newText, edit.fontSize)
+    ) {
+      for (const original of originals) {
+        this.setObjectText(original.member.objPtr, original.text);
+      }
+      this.m.FPDFPage_GenerateContent(pagePtr);
+      this.reloadTextPage(pageIndex);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Last-resort vector fallback: replace the run with a standard PDF font.
+   * This loses the original font but keeps the edited text real, selectable
+   * and editable. Unsupported characters still fail and fall back to overlay.
+   */
+  private applyStandardFontRun(
+    pagePtr: number,
+    pageIndex: number,
+    run: PdfiumTextRun,
+    edit: PdfiumTextEdit,
+  ): boolean {
+    const target =
+      run.members.find((member) => member.text.trim().length > 0) ??
+      run.members[0];
+    if (!target) return false;
+    const fontName = standardFontName(run);
+    const fontPtr = this.m.FPDFText_LoadStandardFont(this.docPtr, fontName);
+    if (!fontPtr) return false;
+    const objectPtr = this.m.FPDFPageObj_CreateTextObj(
+      this.docPtr,
+      fontPtr,
+      run.fontSize,
+    );
+    if (!objectPtr) return false;
+    const textPtr = this.writeUtf16(edit.newText);
+    if (!textPtr) {
+      this.m.FPDFPageObj_Destroy(objectPtr);
+      return false;
+    }
+    let inserted = false;
+    try {
+      if (!this.m.FPDFText_SetText(objectPtr, textPtr)) {
+        this.m.FPDFPageObj_Destroy(objectPtr);
+        return false;
+      }
+      const { r, g, b } = hexToRgb(run.color);
+      this.m.FPDFPageObj_SetFillColor(objectPtr, r, g, b, 255);
+      this.setObjectMatrix(objectPtr, target.matrix);
+      this.m.FPDFPage_InsertObject(pagePtr, objectPtr);
+      inserted = true;
+      if (!this.m.FPDFPage_GenerateContent(pagePtr)) {
+        throw new Error("PDFium: impossibile rigenerare la pagina.");
+      }
+      this.reloadTextPage(pageIndex);
+      const textPage = this.textPage(pageIndex);
+      const roundTrip = textPage ? this.objectText(objectPtr, textPage) : "";
+      const bbox = this.objectBounds(objectPtr);
+      if (
+        normaliseText(roundTrip) !== normaliseText(edit.newText) ||
+        !bbox ||
+        isCollapsed(bbox, edit.newText, edit.fontSize)
+      ) {
+        this.m.FPDFPage_RemoveObject(pagePtr, objectPtr);
+        this.m.FPDFPageObj_Destroy(objectPtr);
+        inserted = false;
+        this.m.FPDFPage_GenerateContent(pagePtr);
+        this.reloadTextPage(pageIndex);
+        return false;
+      }
+      this.reloadTextPage(pageIndex);
+      for (const member of run.members) {
+        if (!this.m.FPDFPage_RemoveObject(pagePtr, member.objPtr)) {
+          throw new Error("PDFium: impossibile rimuovere il testo originale.");
+        }
+        this.m.FPDFPageObj_Destroy(member.objPtr);
+      }
+      if (!this.m.FPDFPage_GenerateContent(pagePtr)) {
+        throw new Error("PDFium: impossibile rigenerare la pagina.");
+      }
+      this.reloadTextPage(pageIndex);
+      return true;
+    } catch (error) {
+      if (inserted) {
+        try {
+          this.m.FPDFPage_RemoveObject(pagePtr, objectPtr);
+          this.m.FPDFPageObj_Destroy(objectPtr);
+        } catch {
+          // The page is already dirty; the whole export will use the overlay.
+        }
+      }
+      throw error;
+    } finally {
+      this.m.pdfium.wasmExports.free(textPtr);
+    }
+  }
+
+  private setObjectMatrix(
+    objPtr: number,
+    matrix: { a: number; b: number; c: number; d: number; e: number; f: number },
+  ): void {
+    const ptr = this.m.pdfium.wasmExports.malloc(24);
+    if (!ptr) return;
+    try {
+      const view = new DataView(
+        (this.m.pdfium.wasmExports as unknown as { memory: WebAssembly.Memory })
+          .memory.buffer,
+      );
+      view.setFloat32(ptr, matrix.a, true);
+      view.setFloat32(ptr + 4, matrix.b, true);
+      view.setFloat32(ptr + 8, matrix.c, true);
+      view.setFloat32(ptr + 12, matrix.d, true);
+      view.setFloat32(ptr + 16, matrix.e, true);
+      view.setFloat32(ptr + 20, matrix.f, true);
+      this.m.FPDFPageObj_SetMatrix(objPtr, ptr);
+    } finally {
+      this.m.pdfium.wasmExports.free(ptr);
+    }
   }
 
   private reloadTextPage(pageIndex: number): void {
@@ -313,42 +556,6 @@ export class PdfiumTextEngine {
     return box;
   }
 
-  private readTextObject(
-    objPtr: number,
-    textPage: number,
-    pageIndex: number,
-    box: PageBox,
-  ): PdfiumTextRun | null {
-    const matrix = this.objectMatrix(objPtr);
-    if (!matrix) return null;
-    // Rotated text objects need an oriented edit box; the first version only
-    // handles upright text and leaves rotated runs untouched.
-    if (Math.abs(matrix.b) > 0.001 || Math.abs(matrix.c) > 0.001) return null;
-
-    const text = this.objectText(objPtr, textPage);
-    if (!text.trim()) return null;
-    const bounds = this.objectBounds(objPtr);
-    if (!bounds) return null;
-
-    const fontSize = Math.max(1, this.objectFontSize(objPtr, bounds.bottom, bounds.top));
-    const font = this.objectFontInfo(objPtr);
-    const color = this.objectColor(objPtr);
-
-    return {
-      key: `${pageIndex}:${objPtr}`,
-      pageIndex,
-      objPtr,
-      text,
-      x: bounds.left - box.left,
-      y: box.top - bounds.top,
-      w: Math.max(1, bounds.right - bounds.left),
-      h: Math.max(1, bounds.top - bounds.bottom),
-      fontSize,
-      ...font,
-      color,
-    };
-  }
-
   private objectText(objPtr: number, textPage: number): string {
     const needed = this.m.FPDFTextObj_GetText(objPtr, textPage, 0, 0);
     if (!needed) return "";
@@ -376,6 +583,7 @@ export class PdfiumTextEngine {
   }
 
   private objectFontInfo(objPtr: number): {
+    fontPtr: number;
     fontFamily: FontFamily;
     bold: boolean;
     italic: boolean;
@@ -404,6 +612,7 @@ export class PdfiumTextEngine {
         ? "times"
         : "helvetica";
     return {
+      fontPtr,
       fontFamily,
       bold: weight >= 600 || /bold|black|heavy/.test(name),
       italic: /italic|oblique/.test(name),
@@ -464,6 +673,8 @@ export class PdfiumTextEngine {
     b: number;
     c: number;
     d: number;
+    e: number;
+    f: number;
   } | null {
     const ptr = this.m.pdfium.wasmExports.malloc(24);
     if (!ptr) return null;
@@ -474,6 +685,8 @@ export class PdfiumTextEngine {
         b: this.f32(ptr + 4),
         c: this.f32(ptr + 8),
         d: this.f32(ptr + 12),
+        e: this.f32(ptr + 16),
+        f: this.f32(ptr + 20),
       };
     } finally {
       this.m.pdfium.wasmExports.free(ptr);
@@ -547,4 +760,100 @@ function heapOf(m: WrappedPdfiumModule): Uint8Array {
 
 function normaliseText(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\u0000/g, "");
+}
+
+/** Merge per-character/per-word PDFium objects into editable line runs. */
+function groupChars(chars: RawChar[]): PdfiumTextRun[] {
+  const groups: PdfiumTextRun[] = [];
+  for (const char of chars) {
+    let current = groups[groups.length - 1];
+    const startsNew =
+      !current ||
+      Math.abs(current.fontSize - char.fontSize) > 0.6 ||
+      current.fontFamily !== char.fontFamily ||
+      current.bold !== char.bold ||
+      current.italic !== char.italic ||
+      current.color !== char.color ||
+      Math.abs(current.y + current.h - (char.y + char.h)) >
+        Math.max(2, char.fontSize * 0.35) ||
+      char.x - (current.x + current.w) < -char.fontSize * 0.8 ||
+      char.x - (current.x + current.w) > char.fontSize * 0.9;
+
+    if (startsNew || !current) {
+      const group: PdfiumTextRun = {
+        key: `${char.pageIndex}:${char.objPtr}:${Math.round(char.x * 10)}`,
+        pageIndex: char.pageIndex,
+        objPtr: char.objPtr,
+        text: char.text,
+        x: char.x,
+        y: char.y,
+        w: char.w,
+        h: char.h,
+        fontSize: char.fontSize,
+        fontFamily: char.fontFamily,
+        bold: char.bold,
+        italic: char.italic,
+        color: char.color,
+        members: [],
+      };
+      groups.push(group);
+      current = group;
+    } else {
+      if (
+        char.x - (current.x + current.w) > char.fontSize * 0.16 &&
+        !/\s$/.test(current.text) &&
+        !/^\s/.test(char.text)
+      ) {
+        current.text += " ";
+      }
+      current.text += char.text;
+    }
+    if (!current) continue;
+    current.w = Math.max(current.w, char.x + char.w - current.x);
+    current.h = Math.max(current.h, char.y + char.h - current.y);
+    current.y = Math.min(current.y, char.y);
+    if (char.objPtr && !current.members.some((member) => member.objPtr === char.objPtr)) {
+      current.members.push(char);
+    }
+  }
+  return groups.filter((group) => group.members.length > 0);
+}
+
+function isCollapsed(
+  bbox: { left: number; right: number },
+  text: string,
+  fontSize: number,
+): boolean {
+  const visible = text.replace(/\s+/gu, "").length;
+  if (visible === 0 || fontSize <= 0) return false;
+  return bbox.right - bbox.left < visible * fontSize * MIN_INK_EM_PER_CHAR;
+}
+
+function standardFontName(run: PdfiumTextRun): string {
+  if (run.fontFamily === "times") {
+    if (run.bold && run.italic) return "Times-BoldItalic";
+    if (run.bold) return "Times-Bold";
+    if (run.italic) return "Times-Italic";
+    return "Times-Roman";
+  }
+  if (run.fontFamily === "courier") {
+    if (run.bold && run.italic) return "Courier-BoldOblique";
+    if (run.bold) return "Courier-Bold";
+    if (run.italic) return "Courier-Oblique";
+    return "Courier";
+  }
+  if (run.bold && run.italic) return "Helvetica-BoldOblique";
+  if (run.bold) return "Helvetica-Bold";
+  if (run.italic) return "Helvetica-Oblique";
+  return "Helvetica";
+}
+
+function hexToRgb(value: string): { r: number; g: number; b: number } {
+  const match = value.match(/^#?([0-9a-f]{6})$/i);
+  if (!match?.[1]) return { r: 0, g: 0, b: 0 };
+  return {
+    r: parseInt(match[1].slice(0, 2), 16),
+    g: parseInt(match[1].slice(2, 4), 16),
+    b: parseInt(match[1].slice(4, 6), 16),
+  };
 }

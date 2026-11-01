@@ -13,7 +13,7 @@
 ## Features
 
 - **PDF.js rendering** with lazy pages, zoom, fit-to-width and DPR-aware canvases.
-- **Edit existing PDF text in place** with PDFium WASM, the same engine Chrome uses.
+- **Edit existing PDF text in place** with PDFium WASM, the same engine Chrome uses. Per-character PDFs are grouped into editable line runs.
 - **Scene objects**: text, images, rectangles, ellipses, lines, freehand pen, highlighter and whiteout.
 - **Direct manipulation**: drag, resize, centre snapping, arrow-key nudge, duplicate, z-order, delete.
 - **Text editing** in place, with font family, size, weight, style, colour and alignment.

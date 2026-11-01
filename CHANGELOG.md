@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Group per-character/per-word PDFium objects into editable line runs.
+- Read characters from the PDFium text page, which fixes scrambled object text in fonts with broken encodings.
+- Standard-font vector fallback for PDFs whose embedded font cannot encode the new text.
+- `resume.pdf`-style documents now expose line-level text boxes instead of 1,500 single-letter boxes.
+
 ## 0.2.3
 
 - Load PDFium text runs only for visible/current pages, not every page at once.
