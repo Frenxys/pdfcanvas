@@ -1212,37 +1212,27 @@ export class PdfCanvas {
         className,
       );
     }
-    if (source.fontCss && !source.mixed) {
-      return this.createOriginalTextElement(
-        source,
-        undefined,
-        x,
-        y,
-        "transparent",
-        className,
-      );
-    }
     const image = this.captureOriginalGhost(page, source);
-    if (!image) {
-      return this.createOriginalTextElement(
-        source,
-        undefined,
-        x,
-        y,
-        "transparent",
-        className,
-      );
+    if (image) {
+      const ghost = document.createElement("div");
+      ghost.className = className;
+      ghost.style.left = `${x * this.zoom}px`;
+      ghost.style.top = `${y * this.zoom}px`;
+      ghost.style.width = `${Math.max(1, source.w * this.zoom)}px`;
+      ghost.style.height = `${Math.max(1, source.h * this.zoom)}px`;
+      ghost.style.backgroundImage = `url("${image}")`;
+      ghost.style.backgroundSize = "100% 100%";
+      ghost.style.backgroundRepeat = "no-repeat";
+      return ghost;
     }
-    const ghost = document.createElement("div");
-    ghost.className = className;
-    ghost.style.left = `${x * this.zoom}px`;
-    ghost.style.top = `${y * this.zoom}px`;
-    ghost.style.width = `${Math.max(1, source.w * this.zoom)}px`;
-    ghost.style.height = `${Math.max(1, source.h * this.zoom)}px`;
-    ghost.style.backgroundImage = `url("${image}")`;
-    ghost.style.backgroundSize = "100% 100%";
-    ghost.style.backgroundRepeat = "no-repeat";
-    return ghost;
+    return this.createOriginalTextElement(
+      source,
+      undefined,
+      x,
+      y,
+      "transparent",
+      className,
+    );
   }
 
   private captureOriginalGhost(
@@ -3032,6 +3022,7 @@ export class PdfCanvas {
         drag.originals ?? [drag.original],
         dx,
         dy,
+        !event.altKey,
       );
       this.renderObjects(drag.page);
     } else if (drag.kind === "marquee" && drag.marquee) {
@@ -3266,6 +3257,7 @@ export class PdfCanvas {
     originals: SceneObject[],
     dx: number,
     dy: number,
+    snapEnabled = true,
   ) {
     if (objects.length === 0) return;
     const [pageWidth, pageHeight] = displaySize(page);
@@ -3273,7 +3265,7 @@ export class PdfCanvas {
     if (!union) return;
     const rawX = union.x + dx;
     const rawY = union.y + dy;
-    const snap = 7 / this.zoom;
+    const snap = snapEnabled ? 5 / this.zoom : 0;
     const exclude = new Set(objects.map((object) => object.id));
     const xTargets = [0, pageWidth / 2, pageWidth];
     const yTargets = [0, pageHeight / 2, pageHeight];
@@ -3283,16 +3275,22 @@ export class PdfCanvas {
       xTargets.push(bounds.x, bounds.x + bounds.w / 2, bounds.x + bounds.w);
       yTargets.push(bounds.y, bounds.y + bounds.h / 2, bounds.y + bounds.h);
     }
-    const bestX = this.bestSnap(
-      [rawX, rawX + union.w / 2, rawX + union.w],
-      xTargets,
-      snap,
-    );
-    const bestY = this.bestSnap(
-      [rawY, rawY + union.h / 2, rawY + union.h],
-      yTargets,
-      snap,
-    );
+    const bestX =
+      snap > 0
+        ? this.bestSnap(
+            [rawX, rawX + union.w / 2, rawX + union.w],
+            xTargets,
+            snap,
+          )
+        : null;
+    const bestY =
+      snap > 0
+        ? this.bestSnap(
+            [rawY, rawY + union.h / 2, rawY + union.h],
+            yTargets,
+            snap,
+          )
+        : null;
     const moveX = clamp(
       dx + (bestX?.delta ?? 0),
       -union.w + 20 - union.x,

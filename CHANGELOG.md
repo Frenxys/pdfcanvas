@@ -16,6 +16,8 @@
 - Subset fonts that only lack a browser-compatible OS/2 or cmap table are rebuilt in memory for the preview, so fonts such as Zapfino, Cameron Sans, Bodoni and Avenir Next Condensed keep their real glyphs while dragging.
 - Custom embedded fonts stay move/delete/duplicate-only. Editing is limited to standard or metric-compatible families, so an edit cannot silently swap the typeface.
 - Text lines are grouped by baseline and spacing instead of font or weight, so a sentence with bold, italic and regular spans is selected and dragged as one line. Mixed-style lines are move/delete only and use a bitmap preview.
+- Dragging original text now always uses a pixel capture of the rendered line, so the preview keeps its exact position, size and font instead of being rebuilt with CSS line-height.
+- Snapping is tighter (5 px at 100%) and can be disabled by holding Alt while dragging. Select-tool pages use `touch-action: none`, so a drag does not turn into a page scroll.
 - Arrow keys nudge selected original text; Shift moves it by 10 points.
 
 ## 0.8.0

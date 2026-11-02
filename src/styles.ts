@@ -216,6 +216,7 @@ export const STYLES = `
   border: 1px dashed var(--pc-accent);
   background: rgba(107, 78, 255, 0.08);
 }
+.pc-root[data-tool="select"] .pc-page { touch-action: none; }
 .pc-root[data-tool="text"] .pc-page { cursor: text; }
 .pc-root:not([data-tool="select"]) .pc-page { touch-action: none; }
 .pc-root[data-tool="image"] .pc-page { cursor: copy; }

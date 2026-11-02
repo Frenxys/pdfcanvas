@@ -266,6 +266,7 @@ Events: `load`, `change`, `selectionchange`, `originaledit`, `zoom`, `pagechange
 | `Ctrl/Cmd+=`, `Ctrl/Cmd+-`, `Ctrl/Cmd+0` | Zoom in / out / fit width |
 | `Ctrl/Cmd` + wheel | Zoom at pointer |
 | Arrows, `Shift` + arrows | Nudge 1 pt / 10 pt |
+| `Alt` + drag | Move without snapping |
 | `Delete` | Delete selection |
 | `Escape` | Back to select / clear selection |
 | `PageUp`, `PageDown` | Previous / next page |
