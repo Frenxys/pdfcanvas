@@ -20,6 +20,7 @@ export const EDITOR_STYLES = `
   -webkit-font-smoothing: antialiased;
 }
 .pce *, .pce *::before, .pce *::after { box-sizing: border-box; }
+.pce-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .pce button, .pce input, .pce select { font: inherit; }
 .pce button { cursor: pointer; }
 .pce-topbar {

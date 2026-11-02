@@ -116,6 +116,9 @@ export function detectLocale(
 const LABELS: Record<Locale, Record<string, string>> = {
   en: {
     file: "Document",
+    pdfEditor: "PDF editor",
+    tools: "Tools",
+    notifications: "Notifications",
     saved: "Saved",
     saving: "Saving…",
     local: "Local",
@@ -201,6 +204,9 @@ const LABELS: Record<Locale, Record<string, string>> = {
   },
   it: {
     file: "Documento",
+    pdfEditor: "Editor PDF",
+    tools: "Strumenti",
+    notifications: "Notifiche",
     saved: "Salvato",
     saving: "Salvataggio…",
     local: "Locale",
@@ -497,16 +503,17 @@ export class PdfCanvasEditor {
           <button type="button" class="pce-outline pce-template-btn" data-templates aria-label="${this.t("templates")}" title="${this.t("templates")}">${icon("template")}<span>${this.t("templates")}</span></button>
           <button type="button" class="pce-primary" data-export>${icon("download")}<span>${this.t("export")}</span></button>
         </div>
+        <h1 class="pce-sr-only">${this.t("pdfEditor")}</h1>
       </header>
-      <div class="pce-tools" data-tools></div>
+      <div class="pce-tools" data-tools role="region" aria-label="${this.t("tools")}"></div>
       <div class="pce-body">
-        <aside class="pce-pages" data-pages-panel>
+        <aside class="pce-pages" data-pages-panel aria-label="${this.t("pages")}">
           <div class="pce-panel-head">
             <div><p class="pce-kicker">${this.t("file")}</p><p class="pce-panel-title">${this.t("pages")}</p></div>
             <span class="pce-count" data-page-count>0</span>
             <button type="button" class="pce-iconbtn" data-pages-close title="${this.t("close")}">${icon("close")}</button>
           </div>
-          <div class="pce-page-list" data-pages-list></div>
+          <div class="pce-page-list" data-pages-list tabindex="0"></div>
           <div class="pce-page-actions">
             <button type="button" data-add-page title="${this.t("addPage")}">${icon("plus")}</button>
             <button type="button" data-duplicate-page title="${this.t("duplicatePage")}">${icon("duplicate")}</button>
@@ -537,7 +544,7 @@ export class PdfCanvasEditor {
           </div>
           <div data-textbar></div>
         </main>
-        <aside class="pce-inspector" data-inspector-panel>
+        <aside class="pce-inspector" data-inspector-panel aria-label="${this.t("properties")}" tabindex="0">
           <div class="pce-panel-head">
             <div><p class="pce-kicker" data-inspector-kicker>${this.t("file")}</p><p class="pce-panel-title">${this.t("properties")}</p></div>
             <button type="button" class="pce-iconbtn" data-inspector-close title="${this.t("close")}">${icon("close")}</button>
@@ -546,7 +553,7 @@ export class PdfCanvasEditor {
         </aside>
       </div>
       <input type="file" accept="application/pdf,.pdf" data-file-input style="display:none" />
-      <div data-toast></div>
+      <div data-toast role="region" aria-label="${this.t("notifications")}"></div>
       <button type="button" class="pce-backdrop" data-backdrop style="display:none" aria-label="${this.t("close")}"></button>
     `;
     container.appendChild(this.root);

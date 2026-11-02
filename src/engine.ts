@@ -162,7 +162,7 @@ export class PdfCanvas {
     this.injectFontFaces();
     this.viewport = document.createElement("div");
     this.viewport.className = "pc-viewport";
-    this.viewport.tabIndex = -1;
+    this.viewport.tabIndex = 0;
     this.pagesEl = document.createElement("div");
     this.pagesEl.className = "pc-pages";
     this.viewport.appendChild(this.pagesEl);
