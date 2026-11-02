@@ -179,6 +179,11 @@ export const EDITOR_STYLES = `
   flex: 0 0 58px;
   padding: 0 8px;
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 8px;
+  -webkit-overflow-scrolling: touch;
   border-bottom: 1px solid var(--pce-line);
   background: var(--pce-paper);
   scrollbar-width: none;
@@ -192,6 +197,8 @@ export const EDITOR_STYLES = `
   gap: 6px;
   height: 40px;
   min-width: 40px;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
   padding: 0 10px;
   border: 0;
   border-radius: 12px;
@@ -435,14 +442,14 @@ export const EDITOR_STYLES = `
 .pce-toast.error { background: #a63a29; }
 .pce-mobile-actions { display: none; }
 @media (max-width: 1180px) {
-  .pce-inspector { position: fixed; top: 114px; right: 0; bottom: 0; width: 300px; transform: translateX(100%); transition: transform .2s; box-shadow: -18px 0 50px -30px rgba(0,0,0,.4); }
+  .pce-inspector { position: fixed; top: 114px; right: 0; bottom: 0; width: min(300px, 86vw); transform: translateX(100%); transition: transform .2s; box-shadow: -18px 0 50px -30px rgba(0,0,0,.4); }
   .pce-inspector.open { transform: translateX(0); }
   .pce-pages [data-pages-close], .pce-inspector [data-inspector-close] { display: inline-flex; }
   .pce-mobile-actions { display: inline-flex; }
   .pce-mobile-actions[data-pages-toggle] { display: none; }
 }
 @media (max-width: 820px) {
-  .pce-pages { position: fixed; top: 114px; left: 0; bottom: 0; width: 248px; transform: translateX(-100%); transition: transform .2s; box-shadow: 18px 0 50px -30px rgba(0,0,0,.4); }
+  .pce-pages { position: fixed; top: 114px; left: 0; bottom: 0; width: min(248px, 78vw); transform: translateX(-100%); transition: transform .2s; box-shadow: 18px 0 50px -30px rgba(0,0,0,.4); }
   .pce-pages.open { transform: translateX(0); }
   .pce-file { display: none; }
   .pce-brand span { display: none; }
@@ -464,6 +471,12 @@ export const EDITOR_STYLES = `
 @media (max-width: 420px) {
   .pce-tools { padding: 0 5px; gap: 2px; }
   .pce-tool { padding: 0 8px; }
+  .pce-empty-card { padding: 22px 16px; border-radius: 22px; }
+  .pce-empty-card h2 { font-size: 27px; }
+  .pce-empty-card p { font-size: 13px; }
+  .pce-empty-actions { width: 100%; }
+  .pce-empty-actions .pce-primary,
+  .pce-empty-actions .pce-outline { width: 100%; justify-content: center; }
 }
 .pce-backdrop { position: fixed; inset: 0; z-index: 10; background: rgba(25,23,34,.28); }
 `;

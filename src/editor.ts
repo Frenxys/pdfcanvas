@@ -1267,11 +1267,14 @@ export class PdfCanvasEditor {
   private currentColor = "#191722";
 
   private togglePanel(panel: HTMLElement) {
-    panel.classList.toggle("open");
-    this.backdrop.style.display =
-      this.pagesPanel.classList.contains("open") || this.inspectorPanel.classList.contains("open")
-        ? "block"
-        : "none";
+    const opening = !panel.classList.contains("open");
+    this.pagesPanel.classList.remove("open");
+    this.inspectorPanel.classList.remove("open");
+    if (opening) {
+      this.core.clearOriginalTextFocus();
+      panel.classList.add("open");
+    }
+    this.backdrop.style.display = opening ? "block" : "none";
   }
 
   private closePanels() {

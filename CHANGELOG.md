@@ -18,7 +18,8 @@
 - Text lines are grouped by baseline and spacing instead of font or weight, so a sentence with bold, italic and regular spans is selected and dragged as one line. Mixed-style lines are move/delete only and use a bitmap preview.
 - Dragging original text now always uses a pixel capture of the rendered line, so the preview keeps its exact position, size and font instead of being rebuilt with CSS line-height.
 - Selection boxes, covers and drag previews use the tight bounds of the PDF text objects, not the loose font box. A tall decorative title no longer covers or drags the paragraph underneath.
-- Snapping is tighter (5 px at 100%) and can be disabled by holding Alt while dragging. Select-tool pages use `touch-action: none`, so a drag does not turn into a page scroll.
+- Snapping is tighter (5 px at 100%) and can be disabled by holding Alt while dragging. The page background keeps vertical touch scrolling while text and objects still capture the drag.
+- Mobile layout: the tools rail scrolls with snap points, drawers are capped to the viewport and only one opens at a time, opening a drawer closes the original-text toolbar, and the empty state becomes a full-width column on narrow phones. The page background keeps vertical touch scrolling.
 - Arrow keys nudge selected original text; Shift moves it by 10 points.
 
 ## 0.8.0
