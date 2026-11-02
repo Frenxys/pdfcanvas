@@ -135,6 +135,7 @@ const LABELS: Record<Locale, Record<string, string>> = {
     redo: "Redo",
     zoomOut: "Zoom out",
     zoomIn: "Zoom in",
+    zoomLevel: "Zoom level",
     fit: "Fit width",
     open: "Open",
     export: "Download PDF",
@@ -225,6 +226,7 @@ const LABELS: Record<Locale, Record<string, string>> = {
     redo: "Ripeti",
     zoomOut: "Zoom indietro",
     zoomIn: "Zoom avanti",
+    zoomLevel: "Livello zoom",
     fit: "Adatta",
     open: "Apri",
     export: "Scarica PDF",
@@ -448,7 +450,8 @@ export class PdfCanvasEditor {
   private readonly toastHost: HTMLDivElement;
   private readonly saveStatus: HTMLSpanElement;
   private readonly pageLabel: HTMLSpanElement;
-  private readonly zoomLabel: HTMLButtonElement;
+  private readonly zoomLabel: HTMLInputElement;
+  private readonly mobileZoomLabel: HTMLInputElement;
   private readonly undoBtn: HTMLButtonElement;
   private readonly redoBtn: HTMLButtonElement;
   private readonly pagesPanel: HTMLElement;
@@ -501,7 +504,7 @@ export class PdfCanvasEditor {
           <span class="pce-zoomgroup">
             <span class="pce-sep"></span>
             <button type="button" class="pce-iconbtn" data-zoom-out title="${this.t("zoomOut")}">${icon("zoomOut")}</button>
-            <button type="button" class="pce-zoom" data-zoom title="${this.t("fit")}">100%</button>
+            <input class="pce-zoom" data-zoom type="text" inputmode="numeric" value="100%" aria-label="${this.t("zoomLevel")}" spellcheck="false" autocomplete="off" />
             <button type="button" class="pce-iconbtn" data-zoom-in title="${this.t("zoomIn")}">${icon("zoomIn")}</button>
             <button type="button" class="pce-iconbtn" data-fit title="${this.t("fit")}">${icon("fit")}</button>
           </span>
@@ -551,7 +554,7 @@ export class PdfCanvasEditor {
           </div>
           <div class="pce-mobile-zoom" data-mobile-zoom>
             <button type="button" class="pce-iconbtn" data-mobile-zoom-out title="${this.t("zoomOut")}">${icon("zoomOut")}</button>
-            <span data-mobile-zoom-label>100%</span>
+            <input class="pce-zoom" data-mobile-zoom-label type="text" inputmode="numeric" value="100%" aria-label="${this.t("zoomLevel")}" spellcheck="false" autocomplete="off" />
             <button type="button" class="pce-iconbtn" data-mobile-zoom-in title="${this.t("zoomIn")}">${icon("zoomIn")}</button>
           </div>
           <div data-textbar></div>
@@ -579,7 +582,8 @@ export class PdfCanvasEditor {
     this.fileInput = this.query("[data-file-input]");
     this.saveStatus = this.query("[data-save-status]");
     this.pageLabel = this.query("[data-page-label]");
-    this.zoomLabel = this.query("[data-zoom]");
+    this.zoomLabel = this.query<HTMLInputElement>("[data-zoom]");
+    this.mobileZoomLabel = this.query<HTMLInputElement>("[data-mobile-zoom-label]");
     this.pagesPanel = this.query("[data-pages-panel]");
     this.inspectorPanel = this.query("[data-inspector-panel]");
     this.toolsBar = this.query("[data-tools]");
@@ -660,10 +664,10 @@ export class PdfCanvasEditor {
     this.query("[data-zoom-out]").addEventListener("click", () => this.core.zoomOut());
     this.query("[data-zoom-in]").addEventListener("click", () => this.core.zoomIn());
     this.query("[data-fit]").addEventListener("click", () => this.core.fitWidth());
-    this.zoomLabel.addEventListener("click", () => this.core.fitWidth());
+    this.bindZoomInput(this.zoomLabel);
+    this.bindZoomInput(this.mobileZoomLabel);
     this.query("[data-mobile-zoom-out]").addEventListener("click", () => this.core.zoomOut());
     this.query("[data-mobile-zoom-in]").addEventListener("click", () => this.core.zoomIn());
-    this.query("[data-mobile-zoom-label]").addEventListener("click", () => this.core.fitWidth());
     this.query("[data-open]").addEventListener("click", () => this.fileInput.click());
     this.query("[data-empty-open]").addEventListener("click", () => this.fileInput.click());
     this.query("[data-empty-sample]").addEventListener("click", () => {
@@ -777,13 +781,51 @@ export class PdfCanvasEditor {
     this.root.remove();
   }
 
+  private bindZoomInput(input: HTMLInputElement) {
+    const apply = () => {
+      const raw = input.value.replace(/%/g, "").replace(",", ".").trim();
+      const percent = Number(raw);
+      if (!Number.isFinite(percent) || percent <= 0) {
+        this.syncTopbar();
+        return;
+      }
+      this.core.setZoom(percent / 100);
+      input.value = `${Math.round(this.core.getState().zoom * 100)}%`;
+    };
+    input.addEventListener("focus", () => {
+      const select = () => {
+        if (document.activeElement === input) input.select();
+      };
+      input.select();
+      window.setTimeout(select, 0);
+    });
+    input.addEventListener("click", () => input.select());
+    input.addEventListener("blur", apply);
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        apply();
+        input.blur();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        input.value = `${Math.round(this.core.getState().zoom * 100)}%`;
+        input.blur();
+      }
+    });
+  }
+
   private syncTopbar() {
     const state = this.core.getState();
     this.undoBtn.disabled = !state.canUndo;
     this.redoBtn.disabled = !state.canRedo;
     const zoomText = `${Math.round(state.zoom * 100)}%`;
-    this.zoomLabel.textContent = zoomText;
-    this.query("[data-mobile-zoom-label]").textContent = zoomText;
+    if (document.activeElement !== this.zoomLabel) {
+      this.zoomLabel.value = zoomText;
+    }
+    if (document.activeElement !== this.mobileZoomLabel) {
+      this.mobileZoomLabel.value = zoomText;
+    }
     this.pageLabel.textContent = state.pageCount
       ? `${state.currentPage + 1} / ${state.pageCount}`
       : "—";

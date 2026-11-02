@@ -7,6 +7,7 @@
 - Embedded fonts are reused for the in-page editor preview through the browser `FontFace` API, with a local fallback when the embedded program is not browser-compatible.
 - Bold and italic controls are disabled for embedded fonts that have no matching variant.
 - `PdfiumTextEngine.applyEdits(edits, moves)` accepts translations; `PdfiumTextMove` is exported.
+- The zoom percentage is now an editable field: click it, type an exact value such as `137`, press Enter. Escape cancels.
 
 ## 0.8.0
 
