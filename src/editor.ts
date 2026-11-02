@@ -671,6 +671,7 @@ export class PdfCanvasEditor {
   }
 
   async download(): Promise<void> {
+    if (this.core.getPages().length === 0) return;
     try {
       await this.core.download();
       this.toast(this.t("exported"));
