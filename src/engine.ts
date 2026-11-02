@@ -1126,6 +1126,21 @@ export class PdfCanvas {
     return [...this.textEdits.values()].map((edit) => deepClone(edit));
   }
 
+  getSourceBytes(): Uint8Array | null {
+    return this.sourceBytes ? new Uint8Array(this.sourceBytes) : null;
+  }
+
+  serializeScene(): string {
+    return this.snapshot();
+  }
+
+  restoreScene(scene: string): void {
+    this.applySnapshot(scene);
+    this.history = [];
+    this.future = [];
+    this.emit("change", { reason: "load" });
+  }
+
   private sampleBackground(page: PageState, run: PdfiumTextRun): string {
     const canvas = this.pageEls.get(page.id)?.querySelector("canvas");
     if (!canvas) return "#ffffff";

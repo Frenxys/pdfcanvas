@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- New `pdfcanvas/editor` entry point with the complete `PdfCanvasEditor` UI.
+- Toolbar, page rail with thumbnails and page actions, property inspector, contextual original-text toolbar.
+- Signature pad, bundled local templates, toast feedback and English/Italian labels.
+- Optional IndexedDB autosave of the original PDF and the editable scene, restored on mount.
+- `ready()` resolves after restore; `open()` waits for restore so a user file always wins.
+- Responsive drawers and a mobile zoom dock.
+- `PdfCanvasEditor` is also exported from the package root.
+
 ## 0.5.2
 
 - Commit an open text edit before exporting (Ctrl/Cmd+S during editing exports the current text).

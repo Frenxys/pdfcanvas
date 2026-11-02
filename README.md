@@ -8,7 +8,7 @@
 - Website / playground: https://pdf.eneawork.it
 - Source: https://github.com/Frenxys/pdfcanvas
 
-> Status: `0.1.x`. The editing model and public API are usable but may still change.
+> Status: `0.6.x`. The editing model and public API are usable but may still change.
 
 ## Features
 
@@ -23,6 +23,7 @@
 - **Vector export**: original pages stay vector; overlays are drawn as PDF text, shapes and images.
 - **Everything local**: the PDF never leaves the browser. The worker is self-hosted by the app.
 - **Framework agnostic**: plain TypeScript + DOM. React, Vue, Svelte or vanilla.
+- **Complete editor UI**: `pdfcanvas/editor` ships the full toolbar, page rail, property inspector, text formatting bar, signature pad, local templates and IndexedDB autosave.
 
 ## Install
 
@@ -64,6 +65,56 @@ editor.on("originaledit", ({ edit }) => {
 ```
 
 The `#editor` element needs a height (for example `height: 100vh` or a flex child with `min-height: 0`).
+
+## Full editor, one import
+
+`pdfcanvas/editor` is the ready-made Canva-style shell. It builds the top bar, tools, pages panel, inspector, contextual original-text toolbar, signature dialog, templates, autosave and mobile drawers around the same core.
+
+```ts
+import { PdfCanvasEditor } from "pdfcanvas/editor";
+
+const editor = new PdfCanvasEditor(document.querySelector("#app")!, {
+  workerSrc: "/pdfjs/pdf.worker.min.mjs",
+  pdfiumWasmUrl: "/pdfium/pdfium.wasm",
+  fontAssetsUrl: "/fonts/",
+  locale: "en",                         // "en" | "it"
+  brandName: "PdfCanvas",
+  brandHref: "https://pdf.eneawork.it",
+  autosave: { key: "my-project", debounce: 600 },
+  templates: [],                        // omit for the bundled templates
+});
+
+await editor.ready();                   // autosaved project restored, if any
+await editor.open(file);
+```
+
+`autosave` stores the original PDF bytes plus the scene in IndexedDB. Nothing is uploaded. Use a distinct `key` per document. Call `destroy()` to release listeners and DOM.
+
+### Editor API
+
+```ts
+await editor.open(source, "name.pdf");
+await editor.download();
+await editor.ready();
+await editor.applyTemplate(template);
+editor.registerTemplate(template);
+editor.destroy();
+
+editor.core        // the underlying PdfCanvas instance (same API as above)
+```
+
+```ts
+interface EditorTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  objects: EditorTemplateObject[];
+}
+```
+
+Template objects are positioned in PDF points from the top-left of the page. Text objects accept `text`, `fontSize`, `fontFamily`, `bold`, `italic`, `color`; shape objects accept `shape`, `width`, `height`, `fill`, `stroke`, `strokeWidth`.
+
+The editor CSS is injected on first mount, so there is no stylesheet import to forget.
 
 ### Self-host the pdf.js worker
 
@@ -230,7 +281,7 @@ npm install
 npm run typecheck
 npm run build
 npm run sample     # writes demo/sample.pdf
-npm run demo       # Vite playground on /demo/
+npm run demo       # Vite playground: /demo/ and /demo/editor.html
 ```
 
 ## License

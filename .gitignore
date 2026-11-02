@@ -8,3 +8,4 @@ demo-dist/
 !.env.example
 coverage/
 .vite/
+*.tgz

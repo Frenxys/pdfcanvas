@@ -1,4 +1,10 @@
 export { PdfCanvas } from "./engine";
+export { PdfCanvasEditor, DEFAULT_TEMPLATES } from "./editor";
+export type {
+  EditorTemplate,
+  EditorTemplateObject,
+  PdfCanvasEditorOptions,
+} from "./editor";
 export { buildPdf } from "./export";
 export { PdfiumTextEngine } from "./pdfium";
 export type {

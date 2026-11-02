@@ -1,7 +1,7 @@
 {
   "name": "pdfcanvas",
-  "version": "0.5.2",
-  "description": "Open-source PDF editor engine for the browser. Render, annotate, edit text and images, manage pages and export vector PDFs. No server required.",
+  "version": "0.6.0",
+  "description": "Open-source client-side PDF editor for the browser: complete editable UI, original-text editing, annotations, page management and vector export. No server required.",
   "license": "MIT",
   "author": "Enea Zani <https://github.com/Frenxys>",
   "homepage": "https://pdf.eneawork.it",
@@ -21,7 +21,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./editor": {
+      "types": "./dist/editor.d.ts",
+      "import": "./dist/editor.js",
+      "require": "./dist/editor.cjs"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
