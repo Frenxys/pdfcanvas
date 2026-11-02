@@ -167,6 +167,21 @@ export const STYLES = `
   box-shadow: 0 2px 10px rgba(25, 23, 34, 0.18);
   cursor: text;
 }
+.pc-root[data-pan="true"] .pc-viewport,
+.pc-root[data-pan="true"] .pc-page,
+.pc-root[data-pan="true"] .pc-obj,
+.pc-root[data-pan="true"] .pc-orig-hit { cursor: grab !important; }
+.pc-root[data-panning="true"] .pc-viewport,
+.pc-root[data-panning="true"] .pc-page,
+.pc-root[data-panning="true"] .pc-obj,
+.pc-root[data-panning="true"] .pc-orig-hit { cursor: grabbing !important; }
+.pc-root[data-tool="select"] .pc-obj:hover {
+  outline: 1.5px solid var(--pc-accent);
+  outline-offset: 1px;
+}
+.pc-root[data-tool="select"] .pc-obj-text[contenteditable="true"]:hover {
+  outline: 1.5px dashed var(--pc-accent);
+}
 .pc-root[data-tool="text-edit"] .pc-page { cursor: text; }
 .pc-handle {
   position: absolute;
@@ -194,6 +209,13 @@ export const STYLES = `
 }
 .pc-guide-v { width: 1px; top: 0; bottom: 0; }
 .pc-guide-h { height: 1px; left: 0; right: 0; }
+.pc-marquee {
+  position: absolute;
+  z-index: 85;
+  pointer-events: none;
+  border: 1px dashed var(--pc-accent);
+  background: rgba(107, 78, 255, 0.08);
+}
 .pc-root[data-tool="text"] .pc-page { cursor: text; }
 .pc-root:not([data-tool="select"]) .pc-page { touch-action: none; }
 .pc-root[data-tool="image"] .pc-page { cursor: copy; }

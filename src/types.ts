@@ -146,7 +146,7 @@ export type ChangeReason =
 export interface PdfCanvasEventMap {
   load: { fileName: string; pageCount: number };
   change: { reason: ChangeReason };
-  selectionchange: { object: SceneObject | null };
+  selectionchange: { object: SceneObject | null; objects?: SceneObject[] };
   zoom: { zoom: number };
   pagechange: { index: number };
   error: { error: Error };

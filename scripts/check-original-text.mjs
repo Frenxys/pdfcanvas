@@ -65,4 +65,50 @@ assert.equal(editedAfter.bold, true, "bold override kept");
 assert.match(editedAfter.fontName, /Bold/i);
 check.destroy();
 
-console.log("original text move/edit check: ok");
+const deleteEngine = await PdfiumTextEngine.create(wasm, source);
+const deleteRun = deleteEngine.readPage(0, 0)[2];
+const deleted = deleteEngine.applyEdits([
+  {
+    ...deleteRun,
+    newText: "",
+    originalText: deleteRun.text,
+    background: "#ffffff",
+    deleted: true,
+  },
+]);
+assert.equal(deleted.failed.length, 0, "delete was applied");
+deleteEngine.destroy();
+const afterDelete = await PdfiumTextEngine.create(wasm, deleted.bytes);
+assert.equal(
+  afterDelete.readPage(0, 0).some((run) => run.text === deleteRun.text),
+  false,
+  "deleted run is gone",
+);
+afterDelete.destroy();
+
+const copyEngine = await PdfiumTextEngine.create(wasm, source);
+const copyRun = copyEngine.readPage(0, 0)[1];
+const copyMove = {
+  ...moveFor(copyRun, 25, 35),
+  key: "copy:check",
+  sourceKey: copyRun.key,
+  copy: true,
+};
+const copied = copyEngine.applyEdits([], [copyMove]);
+assert.equal(copied.failedMoves.length, 0, "copy was applied");
+copyEngine.destroy();
+const afterCopy = await PdfiumTextEngine.create(wasm, copied.bytes);
+const copies = afterCopy
+  .readPage(0, 0)
+  .filter((run) => run.text === copyRun.text);
+assert.equal(copies.length, 2, "copy is present");
+const copyAfter = copies.find(
+  (run) =>
+    Math.abs(run.x - (copyRun.x + 25)) < 0.6 &&
+    Math.abs(run.y - (copyRun.y + 35)) < 0.6,
+);
+assert.ok(copyAfter, "copy offset");
+assert.match(copyAfter.fontName, /Helvetica/i);
+afterCopy.destroy();
+
+console.log("original text move/edit/delete/copy check: ok");

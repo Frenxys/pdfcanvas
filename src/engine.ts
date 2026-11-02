@@ -54,7 +54,7 @@ import type {
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
 interface DragState {
-  kind: "move" | "resize" | "draw" | "line" | "pen" | "original";
+  kind: "move" | "resize" | "draw" | "line" | "pen" | "original" | "copy" | "marquee";
   page: PageState;
   object: SceneObject | null;
   start: { x: number; y: number };
@@ -62,7 +62,10 @@ interface DragState {
   handle?: string;
   points?: Array<[number, number]>;
   moved: boolean;
+  objects?: SceneObject[];
+  originals?: SceneObject[];
   run?: PdfiumTextRun;
+  copyMove?: PdfiumTextMove;
   dx?: number;
   dy?: number;
   originDx?: number;
@@ -70,6 +73,9 @@ interface DragState {
   cover?: HTMLElement;
   ghost?: HTMLElement;
   background?: string;
+  marquee?: HTMLDivElement;
+  additive?: boolean;
+  last?: Point;
 }
 
 interface EditState {
@@ -114,6 +120,8 @@ export class PdfCanvas {
   private currentPageIndex = 0;
   private selectedPageId: string | null = null;
   private selectedObjectId: string | null = null;
+  private selectedObjectIds = new Set<string>();
+  private selectionEls: HTMLDivElement[] = [];
   private reading = false;
   private editingState: EditState | null = null;
   private history: string[] = [];
@@ -122,7 +130,10 @@ export class PdfCanvas {
   private drag: DragState | null = null;
   private pageEls = new Map<string, HTMLDivElement>();
   private visible = new Set<string>();
-  private renderTasks = new Map<string, { cancel: () => void; promise?: Promise<unknown> }>();
+  private renderTasks = new Map<
+    string,
+    { cancel: () => void; promise?: Promise<unknown> }
+  >();
   private observer: IntersectionObserver | null = null;
   private thumbnailCache = new Map<string, string>();
   private listeners = new Map<
@@ -133,7 +144,13 @@ export class PdfCanvas {
   private pendingInsert: Point | null = null;
   private scrollFrame = 0;
   private zoomTimer: ReturnType<typeof setTimeout> | null = null;
-  private selectionEl: HTMLDivElement | null = null;
+  private spaceDown = false;
+  private panStart: {
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+  } | null = null;
   private destroyed = false;
   private pdfium: PdfiumTextEngine | null = null;
   private pdfiumLoading: Promise<PdfiumTextEngine> | null = null;
@@ -206,6 +223,9 @@ export class PdfCanvas {
     container.appendChild(this.root);
 
     this.viewport.addEventListener("scroll", this.onScroll, { passive: true });
+    this.viewport.addEventListener("pointerdown", this.onViewportPointerDown, true);
+    window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", this.onWindowBlur);
     this.root.addEventListener("keydown", this.onKeyDown);
     this.root.addEventListener("dragover", this.onDragOver);
     this.root.addEventListener("dragleave", this.onDragLeave);
@@ -402,6 +422,8 @@ export class PdfCanvas {
     this.originalMoves.clear();
     this.selectedOriginalKey = null;
     this.selectedOriginalPageId = null;
+    this.finishPan();
+    this.setSpacePan(false);
     this.runFontFaces.clear();
     this.fontFaceGeneration += 1;
     this.lockedRunsReported.clear();
@@ -425,7 +447,8 @@ export class PdfCanvas {
     this.beforeSnapshot = null;
     this.selectedPageId = null;
     this.selectedObjectId = null;
-    this.selectionEl = null;
+    this.selectedObjectIds.clear();
+    this.clearSelectionElements();
     this.editingState = null;
     this.thumbnailCache.clear();
     this.currentPageIndex = 0;
@@ -461,7 +484,7 @@ export class PdfCanvas {
     this.pageEls.clear();
     this.visible.clear();
     this.pagesEl.textContent = "";
-    this.selectionEl = null;
+    this.selectionEls = [];
     this.thumbnailCache.clear();
 
     if (typeof IntersectionObserver !== "undefined") {
@@ -616,7 +639,7 @@ export class PdfCanvas {
     const el = this.pageEls.get(page.id);
     const overlay = el?.querySelector<HTMLElement>(".pc-overlay");
     if (!overlay) return;
-    overlay.querySelectorAll(".pc-obj, .pc-selection, .pc-guide").forEach((node) => node.remove());
+    overlay.querySelectorAll(".pc-obj, .pc-selection").forEach((node) => node.remove());
     for (const object of page.objects) {
       overlay.appendChild(this.createObjectElement(page, object));
     }
@@ -740,47 +763,52 @@ export class PdfCanvas {
   }
 
   private renderSelection() {
-    if (this.selectionEl) {
-      this.selectionEl.remove();
-      this.selectionEl = null;
-    }
-    const selected = this.findSelected();
-    if (!selected || this.editingState) return;
-    const pageEl = this.pageEls.get(selected.page.id);
-    const overlay = pageEl?.querySelector<HTMLElement>(".pc-overlay");
+    this.clearSelectionElements();
+    if (this.editingState) return;
+    const page = this.getSelectedPage();
+    if (!page) return;
+    const objects = this.selectedObjectsOnPage(page);
+    if (objects.length === 0) return;
+    const overlay = this.pageEls
+      .get(page.id)
+      ?.querySelector<HTMLElement>(".pc-overlay");
     if (!overlay) return;
-    const bounds = objectBounds(selected.object);
-    const selection = document.createElement("div");
-    selection.className = "pc-selection";
-    selection.style.left = `${bounds.x * this.zoom}px`;
-    selection.style.top = `${bounds.y * this.zoom}px`;
-    selection.style.width = `${bounds.w * this.zoom}px`;
-    selection.style.height = `${bounds.h * this.zoom}px`;
-    const handles =
-      selected.object.type === "text"
-        ? (["w", "e"] as const)
-        : (["nw", "ne", "sw", "se"] as const);
-    for (const corner of handles) {
-      const handle = document.createElement("div");
-      handle.className = "pc-handle";
-      handle.dataset.corner = corner;
-      handle.style.left = corner.includes("w") ? "0" : "100%";
-      handle.style.top =
-        selected.object.type === "text"
-          ? "50%"
-          : corner.includes("n")
-            ? "0"
-            : "100%";
-      handle.style.transform = "translate(-50%, -50%)";
-      handle.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.startResize(event, selected.page, selected.object, corner);
-      });
-      selection.appendChild(handle);
+    for (const object of objects) {
+      const bounds = objectBounds(object);
+      const selection = document.createElement("div");
+      selection.className = "pc-selection";
+      selection.style.left = `${bounds.x * this.zoom}px`;
+      selection.style.top = `${bounds.y * this.zoom}px`;
+      selection.style.width = `${bounds.w * this.zoom}px`;
+      selection.style.height = `${bounds.h * this.zoom}px`;
+      if (objects.length === 1) {
+        const handles =
+          object.type === "text"
+            ? (["w", "e"] as const)
+            : (["nw", "ne", "sw", "se"] as const);
+        for (const corner of handles) {
+          const handle = document.createElement("div");
+          handle.className = "pc-handle";
+          handle.dataset.corner = corner;
+          handle.style.left = corner.includes("w") ? "0" : "100%";
+          handle.style.top =
+            object.type === "text"
+              ? "50%"
+              : corner.includes("n")
+                ? "0"
+                : "100%";
+          handle.style.transform = "translate(-50%, -50%)";
+          handle.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.startResize(event, page, object, corner);
+          });
+          selection.appendChild(handle);
+        }
+      }
+      overlay.appendChild(selection);
+      this.selectionEls.push(selection);
     }
-    overlay.appendChild(selection);
-    this.selectionEl = selection;
   }
 
   private objectElement(page: PageState, id: string): HTMLElement | null {
@@ -981,9 +1009,13 @@ export class PdfCanvas {
     }
 
     for (const move of moves) {
-      overlay.appendChild(this.createOriginalCover(move));
+      if (!move.copy) overlay.appendChild(this.createOriginalCover(move));
     }
     for (const edit of edits) {
+      if (edit.deleted) {
+        overlay.appendChild(this.createOriginalCover(edit));
+        continue;
+      }
       overlay.appendChild(
         this.createOriginalPreview(edit, moveByKey.get(edit.key)),
       );
@@ -1018,6 +1050,7 @@ export class PdfCanvas {
     }
 
     for (const run of runs) {
+      if (this.textEdits.get(run.key)?.deleted) continue;
       const move = moveByKey.get(run.key);
       const hit = document.createElement("div");
       hit.className = "pc-orig-hit";
@@ -1068,6 +1101,28 @@ export class PdfCanvas {
           this.reportNonEditable(run);
         });
       }
+      overlay.appendChild(hit);
+    }
+
+    if (this.tool !== "select") return;
+    for (const move of moves) {
+      if (!move.copy) continue;
+      const hit = document.createElement("div");
+      hit.className = "pc-orig-hit pc-orig-move";
+      hit.style.left = `${(move.x + move.dx) * this.zoom}px`;
+      hit.style.top = `${(move.y + move.dy) * this.zoom}px`;
+      hit.style.width = `${Math.max(12, move.w * this.zoom)}px`;
+      hit.style.height = `${Math.max(10, move.h * this.zoom)}px`;
+      hit.dataset.originalText = move.text;
+      hit.dataset.originalKey = move.key;
+      hit.title = "Trascina per spostare la copia";
+      hit.setAttribute("aria-label", `Copia testo: ${move.text}`);
+      hit.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.beginCopyMove(event, page, move);
+      });
       overlay.appendChild(hit);
     }
   }
@@ -1475,6 +1530,7 @@ export class PdfCanvas {
         stroke: null,
         strokeWidth: 0,
       });
+      if (edit.deleted) continue;
       page.objects.push({
         id: uid(),
         type: "text",
@@ -1559,8 +1615,75 @@ export class PdfCanvas {
     this.clearOriginalSelection();
     this.selectedPageId = pageId;
     this.selectedObjectId = objectId;
+    this.selectedObjectIds = objectId ? new Set([objectId]) : new Set();
     this.renderSelection();
-    this.emit("selectionchange", { object: this.getSelection() });
+    this.emitSelection();
+  }
+
+  private selectMany(
+    pageId: string,
+    objectIds: string[],
+    primaryId: string | null = null,
+  ) {
+    if (this.editingState) this.finishEdit();
+    if (this.originalEdit) this.finishOriginalEdit();
+    if (this.activeOriginalKey) this.clearOriginalTextFocus();
+    this.clearOriginalSelection();
+    this.selectedPageId = pageId;
+    this.selectedObjectIds = new Set(objectIds);
+    this.selectedObjectId =
+      primaryId && this.selectedObjectIds.has(primaryId)
+        ? primaryId
+        : (objectIds[objectIds.length - 1] ?? null);
+    this.renderSelection();
+    this.emitSelection();
+  }
+
+  private toggleObjectSelection(page: PageState, object: SceneObject) {
+    if (this.selectedPageId !== page.id) {
+      this.clearOriginalSelection();
+      this.selectedPageId = page.id;
+      this.selectedObjectIds.clear();
+      this.selectedObjectId = null;
+    }
+    if (this.selectedObjectIds.has(object.id)) {
+      this.selectedObjectIds.delete(object.id);
+      if (this.selectedObjectId === object.id) {
+        this.selectedObjectId = [...this.selectedObjectIds][0] ?? null;
+      }
+    } else {
+      this.selectedObjectIds.add(object.id);
+      this.selectedObjectId = object.id;
+    }
+    this.renderSelection();
+    this.emitSelection();
+  }
+
+  private selectedObjectsOnPage(
+    page: PageState,
+  ): SceneObject[] {
+    return page.objects.filter((object) =>
+      this.selectedObjectIds.has(object.id),
+    );
+  }
+
+  getSelectedObjects(): SceneObject[] {
+    const page = this.getSelectedPage();
+    if (!page) return [];
+    return this.selectedObjectsOnPage(page).map((object) => deepClone(object));
+  }
+
+  private emitSelection() {
+    const objects = this.getSelectedObjects();
+    this.emit("selectionchange", {
+      object: this.getSelection(),
+      objects,
+    });
+  }
+
+  private clearSelectionElements() {
+    for (const element of this.selectionEls) element.remove();
+    this.selectionEls = [];
   }
 
   private clearOriginalSelection() {
@@ -1576,13 +1699,40 @@ export class PdfCanvas {
   }
 
   private selectOriginal(page: PageState, run: PdfiumTextRun) {
+    this.selectOriginalKey(page, run.key);
+  }
+
+  private selectOriginalKey(page: PageState, key: string) {
     this.clearOriginalSelection();
-    this.selectedPageId = page.id;
+    this.selectedObjectIds.clear();
     this.selectedObjectId = null;
-    this.selectedOriginalKey = run.key;
+    this.selectedPageId = page.id;
+    this.selectedOriginalKey = key;
     this.selectedOriginalPageId = page.id;
+    const run = this.textRuns
+      .get(page.id)
+      ?.find((item) => item.key === key);
+    if (run) {
+      const existing = this.textEdits.get(run.key);
+      this.activeOriginalKey = run.key;
+      this.activeOriginalPageId = page.id;
+      this.emit("originaledit", {
+        edit:
+          existing ?? {
+            ...run,
+            newText: run.text,
+            originalText: run.text,
+            background: this.sampleBackground(page, run),
+          },
+      });
+    } else {
+      this.activeOriginalKey = null;
+      this.activeOriginalPageId = null;
+      this.emit("originaledit", { edit: null });
+    }
+    this.renderSelection();
     this.renderOriginalText(page);
-    this.emit("selectionchange", { object: null });
+    this.emitSelection();
   }
 
   clearSelection() {
@@ -1931,42 +2081,149 @@ export class PdfCanvas {
     this.emit("change", { reason: "object" });
   }
 
-  deleteSelected(): void {
-    const selected = this.findSelected();
-    if (!selected) return;
-    this.beginMutation();
-    selected.page.objects = selected.page.objects.filter(
-      (object) => object.id !== selected.object.id,
+  duplicateSelection(): void {
+    const page = this.pages.find(
+      (item) => item.id === this.selectedOriginalPageId,
     );
+    const key = this.selectedOriginalKey;
+    if (page && key) {
+      const source = this.originalMoves.get(key);
+      const run = this.textRuns
+        .get(page.id)
+        ?.find((item) => item.key === key);
+      const edit = run ? this.textEdits.get(run.key) : undefined;
+      const base = run
+        ? { ...run, text: edit?.newText ?? run.text }
+        : source;
+      if (base) {
+        const dx = (source?.dx ?? 0) + 12;
+        const dy = (source?.dy ?? 0) + 12;
+        const copyKey = `copy:${uid()}`;
+        this.beginMutation();
+        this.originalMoves.set(copyKey, {
+          key: copyKey,
+          pageIndex: base.pageIndex,
+          text: base.text,
+          x: base.x,
+          y: base.y,
+          w: base.w,
+          h: base.h,
+          fontSize: base.fontSize,
+          fontFamily: base.fontFamily,
+          fontName: base.fontName,
+          bold: base.bold,
+          italic: base.italic,
+          color: base.color,
+          fontCss: base.fontCss,
+          dx,
+          dy,
+          background:
+            source?.background ?? this.sampleBackground(page, base),
+          copy: true,
+          sourceKey: source?.sourceKey ?? run?.key ?? key,
+        });
+        this.commitMutation("text");
+        this.selectOriginalKey(page, copyKey);
+        this.emit("change", { reason: "text" });
+        return;
+      }
+    }
+    this.duplicateSelected();
+  }
+
+  deleteSelection(): void {
+    const page = this.pages.find(
+      (item) => item.id === this.selectedOriginalPageId,
+    );
+    const key = this.selectedOriginalKey;
+    if (page && key) {
+      const move = this.originalMoves.get(key);
+      if (move?.copy) {
+        this.beginMutation();
+        this.originalMoves.delete(key);
+        this.clearOriginalSelection();
+        this.activeOriginalKey = null;
+        this.activeOriginalPageId = null;
+        this.commitMutation("text");
+        this.renderObjects(page);
+        this.emitSelection();
+        this.emit("change", { reason: "text" });
+        return;
+      }
+      const run = this.textRuns
+        .get(page.id)
+        ?.find((item) => item.key === key);
+      if (run) {
+        const existing = this.textEdits.get(run.key);
+        this.beginMutation();
+        this.textEdits.set(run.key, {
+          ...run,
+          ...existing,
+          newText: "",
+          originalText: run.text,
+          deleted: true,
+          background:
+            existing?.background ??
+            this.sampleBackground(page, run, move?.dx ?? 0, move?.dy ?? 0),
+        });
+        this.originalMoves.delete(run.key);
+        this.clearOriginalSelection();
+        this.activeOriginalKey = null;
+        this.activeOriginalPageId = null;
+        this.commitMutation("text");
+        this.renderObjects(page);
+        this.emit("originaledit", { edit: null });
+        this.emitSelection();
+        this.emit("change", { reason: "text" });
+        return;
+      }
+    }
+    this.deleteSelected();
+  }
+
+  deleteSelected(): void {
+    const page = this.getSelectedPage();
+    if (!page) return;
+    const selected = this.selectedObjectsOnPage(page);
+    if (selected.length === 0) return;
+    this.beginMutation();
+    const ids = new Set(selected.map((object) => object.id));
+    page.objects = page.objects.filter((object) => !ids.has(object.id));
     this.selectedObjectId = null;
-    this.selectionEl?.remove();
-    this.selectionEl = null;
+    this.selectedObjectIds.clear();
+    this.clearSelectionElements();
     this.commitMutation("object");
-    this.renderObjects(selected.page);
-    this.emit("selectionchange", { object: null });
+    this.renderObjects(page);
+    this.emitSelection();
     this.emit("change", { reason: "object" });
   }
 
   duplicateSelected(): void {
-    const selected = this.findSelected();
-    if (!selected) return;
+    const page = this.getSelectedPage();
+    if (!page) return;
+    const selected = this.selectedObjectsOnPage(page);
+    if (selected.length === 0) return;
     this.beginMutation();
-    const clone = deepClone(selected.object);
-    clone.id = uid();
-    if (clone.type === "line") {
-      clone.x1 += 12;
-      clone.y1 += 12;
-      clone.x2 += 12;
-      clone.y2 += 12;
-    } else {
-      clone.x += 12;
-      clone.y += 12;
-    }
-    selected.page.objects.push(clone);
-    this.selectedObjectId = clone.id;
+    const clones = selected.map((object) => {
+      const clone = deepClone(object);
+      clone.id = uid();
+      if (clone.type === "line") {
+        clone.x1 += 12;
+        clone.y1 += 12;
+        clone.x2 += 12;
+        clone.y2 += 12;
+      } else {
+        clone.x += 12;
+        clone.y += 12;
+      }
+      page.objects.push(clone);
+      return clone;
+    });
+    this.selectedObjectIds = new Set(clones.map((clone) => clone.id));
+    this.selectedObjectId = clones[0]?.id ?? null;
     this.commitMutation("object");
-    this.renderObjects(selected.page);
-    this.emit("selectionchange", { object: deepClone(clone) });
+    this.renderObjects(page);
+    this.emitSelection();
     this.emit("change", { reason: "object" });
   }
 
@@ -2073,10 +2330,11 @@ export class PdfCanvas {
       );
       this.selectedPageId = null;
       this.selectedObjectId = null;
-      this.selectionEl = null;
+      this.selectedObjectIds.clear();
+      this.selectionEls = [];
       this.editingState = null;
       this.buildPages();
-      this.emit("selectionchange", { object: null });
+      this.emitSelection();
       this.goToPage(this.currentPageIndex, false);
     } catch (error) {
       this.fail(error);
@@ -2225,11 +2483,66 @@ export class PdfCanvas {
     }
   }
 
+  private setSpacePan(active: boolean) {
+    this.spaceDown = active;
+    if (active) this.root.dataset.pan = "true";
+    else delete this.root.dataset.pan;
+  }
+
+  private onKeyUp = (event: KeyboardEvent) => {
+    if (event.code === "Space") this.setSpacePan(false);
+  };
+
+  private onWindowBlur = () => {
+    this.setSpacePan(false);
+    this.finishPan();
+  };
+
+  private onViewportPointerDown = (event: PointerEvent) => {
+    if (event.button === 1 || (event.button === 0 && this.spaceDown)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (this.originalEdit) this.finishOriginalEdit();
+      if (this.editingState) this.finishEdit();
+      this.panStart = {
+        x: event.clientX,
+        y: event.clientY,
+        left: this.viewport.scrollLeft,
+        top: this.viewport.scrollTop,
+      };
+      this.root.dataset.panning = "true";
+      window.addEventListener("pointermove", this.onPanMove, { passive: false });
+      window.addEventListener("pointerup", this.onPanEnd);
+      window.addEventListener("pointercancel", this.onPanEnd);
+    }
+  };
+
+  private onPanMove = (event: PointerEvent) => {
+    const pan = this.panStart;
+    if (!pan) return;
+    event.preventDefault();
+    this.viewport.scrollLeft = pan.left - (event.clientX - pan.x);
+    this.viewport.scrollTop = pan.top - (event.clientY - pan.y);
+  };
+
+  private onPanEnd = () => {
+    this.finishPan();
+  };
+
+  private finishPan() {
+    if (!this.panStart) return;
+    this.panStart = null;
+    delete this.root.dataset.panning;
+    window.removeEventListener("pointermove", this.onPanMove);
+    window.removeEventListener("pointerup", this.onPanEnd);
+    window.removeEventListener("pointercancel", this.onPanEnd);
+  }
+
   private onPagePointerDown(event: PointerEvent, page: PageState) {    if (event.button !== 0) return;
     if (this.tool === "select") {
       this.setCurrentPage(this.pages.indexOf(page));
       this.root.focus({ preventScroll: true });
-      this.select(page.id, null);
+      this.startMarquee(event, page);
       return;
     }
     if (this.reading) return;
@@ -2259,8 +2572,15 @@ export class PdfCanvas {
       this.createWithTool(page, point);
       return;
     }
-    this.select(page.id, object.id);
-    this.startMove(event, page, object);
+    if (event.shiftKey) {
+      event.preventDefault();
+      this.toggleObjectSelection(page, object);
+      return;
+    }
+    if (!this.selectedObjectIds.has(object.id)) {
+      this.select(page.id, object.id);
+    }
+    this.startMoveSelection(event, page, object);
   }
 
   private createWithTool(page: PageState, point: Point) {
@@ -2386,15 +2706,52 @@ export class PdfCanvas {
     this.renderObjects(page);
   }
 
-  private startMove(event: PointerEvent, page: PageState, object: SceneObject) {
+  private startMoveSelection(
+    event: PointerEvent,
+    page: PageState,
+    primary: SceneObject,
+  ) {
+    const objects = this.selectedObjectsOnPage(page);
+    const moving = objects.length > 0 ? objects : [primary];
     this.beginMutation();
     this.drag = {
       kind: "move",
       page,
-      object,
+      object: primary,
+      objects: moving,
+      originals: moving.map((object) => deepClone(object)),
       start: this.pointFromEvent(event, page),
-      original: deepClone(object),
+      original: deepClone(primary),
       moved: false,
+    };
+    this.attachDragListeners();
+  }
+
+  private startMarquee(event: PointerEvent, page: PageState) {
+    if (this.originalEdit) this.finishOriginalEdit();
+    if (this.editingState) this.finishEdit();
+    event.preventDefault();
+    const start = this.pointFromEvent(event, page);
+    const overlay = this.pageEls
+      .get(page.id)
+      ?.querySelector<HTMLElement>(".pc-overlay");
+    if (!overlay) return;
+    const marquee = document.createElement("div");
+    marquee.className = "pc-marquee";
+    marquee.style.left = `${start.x * this.zoom}px`;
+    marquee.style.top = `${start.y * this.zoom}px`;
+    marquee.style.width = "0px";
+    marquee.style.height = "0px";
+    overlay.appendChild(marquee);
+    this.drag = {
+      kind: "marquee",
+      page,
+      object: null,
+      original: null,
+      start,
+      moved: false,
+      marquee,
+      additive: event.shiftKey,
     };
     this.attachDragListeners();
   }
@@ -2445,6 +2802,46 @@ export class PdfCanvas {
     this.attachDragListeners();
   }
 
+  private beginCopyMove(
+    event: PointerEvent,
+    page: PageState,
+    move: PdfiumTextMove,
+  ) {
+    if (this.originalEdit) this.finishOriginalEdit();
+    if (this.editingState) this.finishEdit();
+    this.selectOriginalKey(page, move.key);
+    this.beginMutation();
+    const overlay = this.pageEls
+      .get(page.id)
+      ?.querySelector<HTMLElement>(".pc-overlay");
+    if (!overlay) return;
+    const ghost = this.createOriginalTextElement(
+      move,
+      undefined,
+      move.x + move.dx,
+      move.y + move.dy,
+      "transparent",
+      "pc-orig-ghost",
+    );
+    overlay.appendChild(ghost);
+    this.drag = {
+      kind: "copy",
+      page,
+      object: null,
+      copyMove: move,
+      start: this.pointFromEvent(event, page),
+      original: null,
+      moved: false,
+      dx: move.dx,
+      dy: move.dy,
+      originDx: move.dx,
+      originDy: move.dy,
+      ghost,
+      background: move.background,
+    };
+    this.attachDragListeners();
+  }
+
   private startResize(
     event: PointerEvent,
     page: PageState,
@@ -2485,10 +2882,24 @@ export class PdfCanvas {
     const dy = point.y - drag.start.y;
     if (!drag.moved && Math.hypot(dx, dy) < 2 / this.zoom) return;
     drag.moved = true;
+    drag.last = point;
 
     if (drag.kind === "move" && drag.object && drag.original) {
-      this.moveObject(drag.page, drag.object, drag.original, dx, dy);
+      this.moveObjects(
+        drag.page,
+        drag.objects ?? [drag.object],
+        drag.originals ?? [drag.original],
+        dx,
+        dy,
+      );
       this.renderObjects(drag.page);
+    } else if (drag.kind === "marquee" && drag.marquee) {
+      const left = Math.min(drag.start.x, point.x);
+      const top = Math.min(drag.start.y, point.y);
+      drag.marquee.style.left = `${left * this.zoom}px`;
+      drag.marquee.style.top = `${top * this.zoom}px`;
+      drag.marquee.style.width = `${Math.abs(point.x - drag.start.x) * this.zoom}px`;
+      drag.marquee.style.height = `${Math.abs(point.y - drag.start.y) * this.zoom}px`;
     } else if (drag.kind === "original" && drag.run) {
       const run = drag.run;
       const [pageWidth, pageHeight] = displaySize(drag.page);
@@ -2515,6 +2926,33 @@ export class PdfCanvas {
       if (selection) {
         selection.style.left = `${(run.x + drag.dx) * this.zoom}px`;
         selection.style.top = `${(run.y + drag.dy) * this.zoom}px`;
+      }
+    } else if (drag.kind === "copy" && drag.copyMove) {
+      const move = drag.copyMove;
+      const [pageWidth, pageHeight] = displaySize(drag.page);
+      drag.dx = clamp(
+        (drag.originDx ?? 0) + dx,
+        -move.x,
+        Math.max(-move.x, pageWidth - move.x - move.w),
+      );
+      drag.dy = clamp(
+        (drag.originDy ?? 0) + dy,
+        -move.y,
+        Math.max(-move.y, pageHeight - move.y - move.h),
+      );
+      if (drag.ghost) {
+        drag.ghost.style.left = `${(move.x + drag.dx) * this.zoom}px`;
+        drag.ghost.style.top = `${(move.y + drag.dy) * this.zoom}px`;
+      }
+      const overlay = this.pageEls
+        .get(drag.page.id)
+        ?.querySelector<HTMLElement>(".pc-overlay");
+      const selection = overlay?.querySelector<HTMLElement>(
+        ".pc-orig-selection",
+      );
+      if (selection) {
+        selection.style.left = `${(move.x + drag.dx) * this.zoom}px`;
+        selection.style.top = `${(move.y + drag.dy) * this.zoom}px`;
       }
     } else if (drag.kind === "resize" && drag.object && drag.original && drag.handle) {
       this.resizeObject(drag.object, drag.original, drag.handle, dx, dy);
@@ -2549,6 +2987,7 @@ export class PdfCanvas {
     this.clearGuides();
     drag.cover?.remove();
     drag.ghost?.remove();
+    drag.marquee?.remove();
     if (!drag.moved) {
       if (drag.kind === "draw" || drag.kind === "line" || drag.kind === "pen") {
         this.removeObject(drag.page, drag.object);
@@ -2557,8 +2996,62 @@ export class PdfCanvas {
       } else {
         this.abortMutation();
       }
+      if (drag.kind === "marquee" && !drag.additive) {
+        this.clearSelection();
+      }
       if (drag.kind === "original" && drag.run) {
         this.selectOriginal(drag.page, drag.run);
+      }
+      if (drag.kind === "copy" && drag.copyMove) {
+        this.selectOriginalKey(drag.page, drag.copyMove.key);
+      }
+      return;
+    }
+    if (drag.kind === "copy" && drag.copyMove) {
+      const move = drag.copyMove;
+      const updated: PdfiumTextMove = {
+        ...move,
+        dx: drag.dx ?? 0,
+        dy: drag.dy ?? 0,
+      };
+      if (!updated.dx && !updated.dy) {
+        this.originalMoves.delete(move.key);
+        this.clearOriginalSelection();
+      } else {
+        this.originalMoves.set(move.key, updated);
+        this.selectOriginalKey(drag.page, move.key);
+      }
+      this.commitMutation("text");
+      this.renderObjects(drag.page);
+      this.emit("change", { reason: "text" });
+      return;
+    }
+    if (drag.kind === "marquee") {
+      const end = drag.last ?? drag.start;
+      const left = Math.min(drag.start.x, end.x);
+      const top = Math.min(drag.start.y, end.y);
+      const right = Math.max(drag.start.x, end.x);
+      const bottom = Math.max(drag.start.y, end.y);
+      const hits = drag.page.objects.filter((object) => {
+        const bounds = objectBounds(object);
+        return (
+          bounds.x < right &&
+          bounds.x + bounds.w > left &&
+          bounds.y < bottom &&
+          bounds.y + bounds.h > top
+        );
+      });
+      const ids = hits.map((object) => object.id);
+      if (drag.additive) {
+        const merged = new Set(this.selectedObjectIds);
+        for (const id of ids) merged.add(id);
+        if (merged.size > 0) {
+          this.selectMany(drag.page.id, [...merged], ids[ids.length - 1] ?? null);
+        }
+      } else if (ids.length > 0) {
+        this.selectMany(drag.page.id, ids, ids[ids.length - 1] ?? null);
+      } else {
+        this.clearSelection();
       }
       return;
     }
@@ -2626,46 +3119,100 @@ export class PdfCanvas {
     this.emit("change", { reason: "object" });
   };
 
-  private moveObject(
+  private moveObjects(
     page: PageState,
-    object: SceneObject,
-    original: SceneObject,
+    objects: SceneObject[],
+    originals: SceneObject[],
     dx: number,
     dy: number,
   ) {
+    if (objects.length === 0) return;
     const [pageWidth, pageHeight] = displaySize(page);
-    if (object.type === "line") {
-      if (original.type !== "line") return;
-      const bounds = objectBounds(original);
-      const x = clamp(bounds.x + dx, -bounds.w + 20, pageWidth - 20);
-      const y = clamp(bounds.y + dy, -bounds.h + 20, pageHeight - 20);
-      const moveX = x - bounds.x;
-      const moveY = y - bounds.y;
-      object.x1 = original.x1 + moveX;
-      object.y1 = original.y1 + moveY;
-      object.x2 = original.x2 + moveX;
-      object.y2 = original.y2 + moveY;
-      return;
-    }
-    const bounds = objectBounds(original);
-    let x = clamp(bounds.x + dx, -bounds.w + 20, pageWidth - 20);
-    let y = clamp(bounds.y + dy, -bounds.h + 20, pageHeight - 20);
+    const union = this.unionBounds(originals);
+    if (!union) return;
+    const rawX = union.x + dx;
+    const rawY = union.y + dy;
     const snap = 7 / this.zoom;
-    let guideX: number | null = null;
-    let guideY: number | null = null;
-    const centerX = x + bounds.w / 2;
-    if (Math.abs(centerX - pageWidth / 2) < snap) {
-      x = pageWidth / 2 - bounds.w / 2;
-      guideX = pageWidth / 2;
+    const exclude = new Set(objects.map((object) => object.id));
+    const xTargets = [0, pageWidth / 2, pageWidth];
+    const yTargets = [0, pageHeight / 2, pageHeight];
+    for (const other of page.objects) {
+      if (exclude.has(other.id)) continue;
+      const bounds = objectBounds(other);
+      xTargets.push(bounds.x, bounds.x + bounds.w / 2, bounds.x + bounds.w);
+      yTargets.push(bounds.y, bounds.y + bounds.h / 2, bounds.y + bounds.h);
     }
-    const centerY = y + bounds.h / 2;
-    if (Math.abs(centerY - pageHeight / 2) < snap) {
-      y = pageHeight / 2 - bounds.h / 2;
-      guideY = pageHeight / 2;
+    const bestX = this.bestSnap(
+      [rawX, rawX + union.w / 2, rawX + union.w],
+      xTargets,
+      snap,
+    );
+    const bestY = this.bestSnap(
+      [rawY, rawY + union.h / 2, rawY + union.h],
+      yTargets,
+      snap,
+    );
+    const moveX = clamp(
+      dx + (bestX?.delta ?? 0),
+      -union.w + 20 - union.x,
+      pageWidth - 20 - union.x,
+    );
+    const moveY = clamp(
+      dy + (bestY?.delta ?? 0),
+      -union.h + 20 - union.y,
+      pageHeight - 20 - union.y,
+    );
+
+    objects.forEach((object, index) => {
+      const original = originals[index];
+      if (!original) return;
+      if (object.type === "line" && original.type === "line") {
+        object.x1 = original.x1 + moveX;
+        object.y1 = original.y1 + moveY;
+        object.x2 = original.x2 + moveX;
+        object.y2 = original.y2 + moveY;
+      } else if (object.type !== "line" && original.type !== "line") {
+        object.x = original.x + moveX;
+        object.y = original.y + moveY;
+      }
+    });
+    this.showGuides(page, bestX?.guide ?? null, bestY?.guide ?? null);
+  }
+
+  private bestSnap(
+    own: number[],
+    targets: number[],
+    threshold: number,
+  ): { delta: number; guide: number } | null {
+    let best: { delta: number; guide: number } | null = null;
+    for (const value of own) {
+      for (const target of targets) {
+        const delta = target - value;
+        if (
+          Math.abs(delta) <= threshold &&
+          (!best || Math.abs(delta) < Math.abs(best.delta))
+        ) {
+          best = { delta, guide: target };
+        }
+      }
     }
-    object.x = x;
-    object.y = y;
-    this.showGuides(page, guideX, guideY);
+    return best;
+  }
+
+  private unionBounds(objects: SceneObject[]) {
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+    for (const object of objects) {
+      const bounds = objectBounds(object);
+      left = Math.min(left, bounds.x);
+      top = Math.min(top, bounds.y);
+      right = Math.max(right, bounds.x + bounds.w);
+      bottom = Math.max(bottom, bounds.y + bounds.h);
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
   }
 
   private resizeObject(
@@ -2843,6 +3390,11 @@ export class PdfCanvas {
     ) {
       return;
     }
+    if (event.code === "Space" && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      if (!this.spaceDown) this.setSpacePan(true);
+      return;
+    }
     const mod = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
 
@@ -2859,7 +3411,7 @@ export class PdfCanvas {
     }
     if (mod && key === "d") {
       event.preventDefault();
-      this.duplicateSelected();
+      this.duplicateSelection();
       return;
     }
     if (mod && key === "s") {
@@ -2883,12 +3435,21 @@ export class PdfCanvas {
       return;
     }
     if (mod && key === "a") {
+      const page = this.pages[this.currentPageIndex];
+      if (page && page.objects.length > 0) {
+        event.preventDefault();
+        this.selectMany(
+          page.id,
+          page.objects.map((object) => object.id),
+          page.objects[page.objects.length - 1]?.id ?? null,
+        );
+      }
       return;
     }
     if (event.key === "Delete" || event.key === "Backspace") {
-      if (this.selectedObjectId) {
+      if (this.selectedObjectId || this.selectedOriginalKey) {
         event.preventDefault();
-        this.deleteSelected();
+        this.deleteSelection();
       }
       return;
     }
@@ -2910,10 +3471,14 @@ export class PdfCanvas {
       ArrowDown: [0, 1],
     };
     const direction = arrows[event.key];
-    if (direction && this.selectedObjectId) {
+    if (direction && (this.selectedObjectId || this.selectedOriginalKey)) {
       event.preventDefault();
       const step = event.shiftKey ? 10 : 1;
-      this.nudge(direction[0] * step, direction[1] * step);
+      if (this.selectedObjectId) {
+        this.nudge(direction[0] * step, direction[1] * step);
+      } else {
+        this.nudgeOriginal(direction[0] * step, direction[1] * step);
+      }
       return;
     }
     if (event.key === "PageDown") {
@@ -2927,21 +3492,73 @@ export class PdfCanvas {
   };
 
   private nudge(dx: number, dy: number) {
-    const selected = this.findSelected();
-    if (!selected) return;
+    const page = this.getSelectedPage();
+    if (!page) return;
+    const selected = this.selectedObjectsOnPage(page);
+    if (selected.length === 0) return;
     this.beginMutation();
-    if (selected.object.type === "line") {
-      selected.object.x1 += dx;
-      selected.object.y1 += dy;
-      selected.object.x2 += dx;
-      selected.object.y2 += dy;
-    } else {
-      selected.object.x += dx;
-      selected.object.y += dy;
+    for (const object of selected) {
+      if (object.type === "line") {
+        object.x1 += dx;
+        object.y1 += dy;
+        object.x2 += dx;
+        object.y2 += dy;
+      } else {
+        object.x += dx;
+        object.y += dy;
+      }
     }
     this.commitMutation("object");
-    this.renderObjects(selected.page);
+    this.renderObjects(page);
     this.emit("change", { reason: "object" });
+  }
+
+  private nudgeOriginal(dx: number, dy: number) {
+    const page = this.pages.find(
+      (item) => item.id === this.selectedOriginalPageId,
+    );
+    const key = this.selectedOriginalKey;
+    if (!page || !key) return;
+    if (this.textEdits.get(key)?.deleted) return;
+    const run = this.textRuns
+      .get(page.id)
+      ?.find((item) => item.key === key);
+    const move = this.originalMoves.get(key);
+    if (!run && !move) return;
+    const base =
+      move ??
+      (run
+        ? {
+            key: run.key,
+            pageIndex: run.pageIndex,
+            text: run.text,
+            x: run.x,
+            y: run.y,
+            w: run.w,
+            h: run.h,
+            fontSize: run.fontSize,
+            fontFamily: run.fontFamily,
+            fontName: run.fontName,
+            bold: run.bold,
+            italic: run.italic,
+            color: run.color,
+            fontCss: run.fontCss,
+            dx: 0,
+            dy: 0,
+            background: this.sampleBackground(page, run),
+          }
+        : null);
+    if (!base) return;
+    this.beginMutation();
+    this.originalMoves.set(key, {
+      ...base,
+      dx: base.dx + dx,
+      dy: base.dy + dy,
+    });
+    this.commitMutation("text");
+    this.renderObjects(page);
+    this.selectOriginalKey(page, key);
+    this.emit("change", { reason: "text" });
   }
 
   // ----------------------------------------------------------------- tools
@@ -3136,8 +3753,13 @@ export class PdfCanvas {
     this.originalMoves.clear();
     this.runFontFaces.clear();
     this.detachDragListeners();
+    this.finishPan();
+    this.setSpacePan(false);
     this.observer?.disconnect();
     this.root.removeEventListener("keydown", this.onKeyDown);
+    this.viewport.removeEventListener("pointerdown", this.onViewportPointerDown, true);
+    window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.onWindowBlur);
     this.root.removeEventListener("dragover", this.onDragOver);
     this.root.removeEventListener("dragleave", this.onDragLeave);
     this.root.removeEventListener("drop", this.onDrop);

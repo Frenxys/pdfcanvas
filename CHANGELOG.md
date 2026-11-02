@@ -8,6 +8,11 @@
 - Bold and italic controls are disabled for embedded fonts that have no matching variant.
 - `PdfiumTextEngine.applyEdits(edits, moves)` accepts translations; `PdfiumTextMove` is exported.
 - The zoom percentage is now an editable field: click it, type an exact value such as `137`, press Enter. Escape cancels.
+- Pan the viewport with Space + drag or the middle mouse button.
+- Snap dragged objects to page edges, page centre and other objects, with alignment guides.
+- Multi-select with Shift + click, Ctrl/Cmd + A or a marquee; drag the whole selection together.
+- Delete and duplicate original text. Duplicates are inserted as real PDF text with the original font, and both actions support undo.
+- Arrow keys nudge selected original text; Shift moves it by 10 points.
 
 ## 0.8.0
 

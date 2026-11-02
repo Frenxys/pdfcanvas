@@ -67,6 +67,9 @@ export interface PdfiumTextMove {
   dx: number;
   dy: number;
   background: string;
+  /** A copy is inserted as a new object instead of moving the source run. */
+  copy?: boolean;
+  sourceKey?: string;
 }
 
 interface RawChar extends PdfiumTextMember {
@@ -80,6 +83,8 @@ export interface PdfiumTextEdit extends PdfiumTextRun {
   newText: string;
   originalText: string;
   background: string;
+  /** Remove the original text object instead of replacing it. */
+  deleted?: boolean;
   boldOverride?: boolean;
   italicOverride?: boolean;
   fontSizeOverride?: number;
@@ -369,6 +374,7 @@ export class PdfiumTextEngine {
 
     const movedPages = new Set<number>();
     for (const move of moves) {
+      if (move.copy) continue;
       if (!move.dx && !move.dy) continue;
       const run = runsByKey.get(move.key);
       if (!run || !this.translateRun(run, move.dx, move.dy)) {
@@ -385,8 +391,37 @@ export class PdfiumTextEngine {
       }
     }
 
+    for (const move of moves) {
+      if (!move.copy) continue;
+      const pagePtr = this.page(move.pageIndex);
+      const run = runsByKey.get(move.sourceKey ?? move.key);
+      if (
+        !pagePtr ||
+        !run ||
+        !this.insertCopy(pagePtr, move.pageIndex, run, move)
+      ) {
+        failedMoves.push(move);
+        continue;
+      }
+      applied += 1;
+    }
+
     const moveByKey = new Map(moves.map((move) => [move.key, move]));
     for (const edit of edits) {
+      const pagePtr = this.page(edit.pageIndex);
+      if (!pagePtr) {
+        failed.push(edit);
+        continue;
+      }
+      const run = runsByKey.get(edit.key) ?? this.matchRun(edit);
+      if (edit.deleted) {
+        if (run && this.removeRun(pagePtr, edit.pageIndex, run)) {
+          applied += 1;
+        } else {
+          failed.push(edit);
+        }
+        continue;
+      }
       const hasFormat =
         edit.boldOverride !== undefined ||
         edit.italicOverride !== undefined ||
@@ -395,12 +430,6 @@ export class PdfiumTextEngine {
       if (!edit.newText || (edit.newText === edit.originalText && !hasFormat)) {
         continue;
       }
-      const pagePtr = this.page(edit.pageIndex);
-      if (!pagePtr) {
-        failed.push(edit);
-        continue;
-      }
-      const run = runsByKey.get(edit.key) ?? this.matchRun(edit);
       if (!run) {
         failed.push(edit);
         continue;
@@ -441,10 +470,112 @@ export class PdfiumTextEngine {
     return true;
   }
 
+  private removeRun(
+    pagePtr: number,
+    pageIndex: number,
+    run: PdfiumTextRun,
+  ): boolean {
+    try {
+      for (const member of run.members) {
+        if (!this.m.FPDFPage_RemoveObject(pagePtr, member.objPtr)) {
+          return false;
+        }
+        this.m.FPDFPageObj_Destroy(member.objPtr);
+      }
+      if (!this.m.FPDFPage_GenerateContent(pagePtr)) return false;
+      this.reloadTextPage(pageIndex);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Embedded font bytes for the given run, or null when it is not embedded. */
   fontBytes(run: PdfiumTextRun): Uint8Array | null {
     const fontPtr = run.members[0]?.fontPtr ?? 0;
     return this.readFontBytes(fontPtr);
+  }
+
+  private insertCopy(
+    pagePtr: number,
+    pageIndex: number,
+    run: PdfiumTextRun,
+    move: PdfiumTextMove,
+  ): boolean {
+    const target =
+      run.members.find((member) => member.text.trim().length > 0) ??
+      run.members[0];
+    if (!target) return false;
+    const style: EditStyle = {
+      bold: run.bold,
+      italic: run.italic,
+      fontSize: run.fontSize,
+      color: run.color,
+    };
+    const fontPtr = isStandardFamily(run)
+      ? this.m.FPDFText_LoadStandardFont(
+          this.docPtr,
+          standardFontName(run, style),
+        )
+      : (this.loadEmbeddedFont(target.fontPtr) ??
+        (isFallbackFamily(run) ? this.loadFallbackFont(run, style) : null));
+    if (!fontPtr) return false;
+    const sourceSize =
+      target.textFontSize || run.textFontSize || run.fontSize || style.fontSize;
+    const objectPtr = this.m.FPDFPageObj_CreateTextObj(
+      this.docPtr,
+      fontPtr,
+      sourceSize,
+    );
+    if (!objectPtr) return false;
+    const textPtr = this.writeUtf16(move.text);
+    if (!textPtr) {
+      this.m.FPDFPageObj_Destroy(objectPtr);
+      return false;
+    }
+    let inserted = false;
+    try {
+      if (!this.m.FPDFText_SetText(objectPtr, textPtr)) {
+        this.m.FPDFPageObj_Destroy(objectPtr);
+        return false;
+      }
+      const { r, g, b } = hexToRgb(style.color);
+      this.m.FPDFPageObj_SetFillColor(objectPtr, r, g, b, 255);
+      this.setObjectMatrix(objectPtr, {
+        ...target.matrix,
+        e: target.matrix.e + move.dx,
+        f: target.matrix.f - move.dy,
+      });
+      this.m.FPDFPage_InsertObject(pagePtr, objectPtr);
+      inserted = true;
+      if (!this.m.FPDFPage_GenerateContent(pagePtr)) {
+        throw new Error("PDFium: impossibile rigenerare la pagina.");
+      }
+      this.reloadTextPage(pageIndex);
+      const textPage = this.textPage(pageIndex);
+      const roundTrip = textPage ? this.objectText(objectPtr, textPage) : "";
+      if (normaliseText(roundTrip) !== normaliseText(move.text)) {
+        this.m.FPDFPage_RemoveObject(pagePtr, objectPtr);
+        this.m.FPDFPageObj_Destroy(objectPtr);
+        inserted = false;
+        this.m.FPDFPage_GenerateContent(pagePtr);
+        this.reloadTextPage(pageIndex);
+        return false;
+      }
+      return true;
+    } catch {
+      if (inserted) {
+        try {
+          this.m.FPDFPage_RemoveObject(pagePtr, objectPtr);
+          this.m.FPDFPageObj_Destroy(objectPtr);
+        } catch {
+          // Best effort; the caller reports the copy as failed.
+        }
+      }
+      return false;
+    } finally {
+      this.m.pdfium.wasmExports.free(textPtr);
+    }
   }
 
   private applyRun(

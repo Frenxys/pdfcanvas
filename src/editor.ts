@@ -210,6 +210,9 @@ const LABELS: Record<Locale, Record<string, string>> = {
     originalText: "Original text",
     styleUnavailable:
       "This embedded font has no bold or italic variant. Move the text instead.",
+    confirmDeleteOriginal:
+      "Delete this original text? You can undo with Ctrl/Cmd+Z.",
+    multipleSelected: "Multiple elements selected",
     autosave: "Autosave",
     untitled: "document.pdf",
   },
@@ -301,6 +304,9 @@ const LABELS: Record<Locale, Record<string, string>> = {
     originalText: "Testo originale",
     styleUnavailable:
       "Questo font incorporato non ha varianti grassetto o corsivo. Sposta il testo.",
+    confirmDeleteOriginal:
+      "Eliminare questo testo originale? Puoi annullare con Ctrl/Cmd+Z.",
+    multipleSelected: "Più elementi selezionati",
     autosave: "Autosave",
     untitled: "documento.pdf",
   },
@@ -988,6 +994,9 @@ export class PdfCanvasEditor {
       return;
     }
     this.query("[data-inspector-kicker]").textContent = this.t("properties");
+    if (this.core.getSelectedObjects().length > 1) {
+      form.appendChild(el("p", "pce-kicker", this.t("multipleSelected")));
+    }
     this.buildInspector(form, state.selection);
     this.inspector.appendChild(form);
   }
@@ -1048,9 +1057,9 @@ export class PdfCanvasEditor {
     form.appendChild(this.rangeField(this.t("opacity"), object.opacity ?? 1, 0.05, 1, 0.05, (value) => this.core.updateSelected({ opacity: value })));
     const actions = el("div", "pce-btnrow");
     const dup = button(`${icon("duplicate")}<span>${this.t("duplicate")}</span>`, this.t("duplicate"), "pce-smallbtn");
-    dup.addEventListener("click", () => this.core.duplicateSelected());
+    dup.addEventListener("click", () => this.core.duplicateSelection());
     const del = button(`${icon("trash")}<span>${this.t("delete")}</span>`, this.t("delete"), "pce-smallbtn danger");
-    del.addEventListener("click", () => this.core.deleteSelected());
+    del.addEventListener("click", () => this.core.deleteSelection());
     const fwd = button(`${icon("forward")}<span>${this.t("forward")}</span>`, this.t("forward"), "pce-smallbtn");
     fwd.addEventListener("click", () => this.core.bringForward());
     const back = button(`${icon("backward")}<span>${this.t("backward")}</span>`, this.t("backward"), "pce-smallbtn");
@@ -1188,7 +1197,14 @@ export class PdfCanvasEditor {
       colorLabel.append(swatch, color);
       const close = button(icon("close"), this.t("close"));
       close.addEventListener("click", () => this.core.clearOriginalTextFocus());
-      bar.append(bold, italic, size, colorLabel, close);
+      const duplicate = button(icon("duplicate"), this.t("duplicate"));
+      duplicate.addEventListener("click", () => this.core.duplicateSelection());
+      const remove = button(icon("trash"), this.t("delete"));
+      remove.addEventListener("click", () => {
+        if (!window.confirm(this.t("confirmDeleteOriginal"))) return;
+        this.core.deleteSelection();
+      });
+      bar.append(bold, italic, size, colorLabel, duplicate, remove, close);
       this.textbarHost.appendChild(bar);
       this.textbar = bar;
       bar._bold = bold;

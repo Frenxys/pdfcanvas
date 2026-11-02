@@ -18,6 +18,9 @@
 - **Font matching** with the embedded font first, then bundled Work Sans and Arial-metric Liberation Sans only for families they actually replace. Unsupported runs are move-only instead of being silently restyled.
 - **Scene objects**: text, images, rectangles, ellipses, lines, freehand pen, highlighter and whiteout.
 - **Direct manipulation**: drag, resize, centre snapping, arrow-key nudge, duplicate, z-order, delete.
+- **Multi-select**: Shift + click, Ctrl/Cmd + A or marquee; group drag and group delete/duplicate.
+- **Pan and snap**: Space + drag or middle mouse to pan; snap to page edges, page centre and other objects.
+- **Edit or move original text**: drag lines as PDF objects, delete them, duplicate them with the original font, or rewrite glyphs with PDFium.
 - **Text editing** in place, with font family, size, weight, style, colour and alignment.
 - **Page management**: insert blank pages, duplicate, delete, reorder by drag or buttons, rotate.
 - **Text boxes** grow with their content or wrap after a side-handle resize; wrapped text exports as wrapped PDF text.
@@ -226,6 +229,9 @@ editor.redo();
 editor.getOriginalEdits();
 editor.updateOriginalText({ boldOverride: true, fontSizeOverride: 24, colorOverride: "#c7442e" });
 editor.clearOriginalTextFocus();
+editor.deleteSelection();      // removes selected objects or original text
+editor.duplicateSelection();   // duplicates the selected original text or objects
+editor.getSelectedObjects();   // multi-selection, as cloned scene objects
 ```
 
 ### Zoom and tools
