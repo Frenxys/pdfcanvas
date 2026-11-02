@@ -38,12 +38,41 @@ export interface PdfiumTextRun {
   bold: boolean;
   italic: boolean;
   color: string;
+  /** True when the original font is embedded or safely replaceable. */
+  editable: boolean;
+  /** True when bold/italic can be reproduced without changing typeface. */
+  canStyle: boolean;
+  /** CSS family registered from the embedded font, when available. */
+  fontCss?: string;
   /** A line may be built from many per-character PDFium objects. */
   members: PdfiumTextMember[];
 }
 
+/** A translation applied to an original text run. */
+export interface PdfiumTextMove {
+  key: string;
+  pageIndex: number;
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fontSize: number;
+  fontFamily: FontFamily;
+  fontName: string;
+  bold: boolean;
+  italic: boolean;
+  color: string;
+  fontCss?: string;
+  dx: number;
+  dy: number;
+  background: string;
+}
+
 interface RawChar extends PdfiumTextMember {
   pageIndex: number;
+  editable: boolean;
+  canStyle: boolean;
 }
 
 /** A pending edit for an original text object. */
@@ -60,6 +89,19 @@ export interface PdfiumTextEdit extends PdfiumTextRun {
 export interface PdfiumApplyResult {
   bytes: Uint8Array;
   failed: PdfiumTextEdit[];
+  failedMoves: PdfiumTextMove[];
+}
+
+interface FontInfo {
+  fontPtr: number;
+  fontFamily: FontFamily;
+  fontName: string;
+  bold: boolean;
+  italic: boolean;
+  embedded: boolean;
+  standard: boolean;
+  fallback: boolean;
+  canStyle: boolean;
 }
 
 interface PageBox {
@@ -108,6 +150,8 @@ export class PdfiumTextEngine {
   private readonly loadedFonts: Array<{ fontPtr: number; dataPtr: number }> = [];
   private readonly fallbackFontData = new Map<string, Uint8Array>();
   private readonly fallbackFontPtrs = new Map<string, number>();
+  private readonly fontInfoCache = new Map<number, FontInfo>();
+  private readonly fontDataCache = new Map<number, Uint8Array | null>();
   private destroyed = false;
 
   private constructor(
@@ -205,6 +249,8 @@ export class PdfiumTextEngine {
       | "italic"
       | "color"
       | "fontPtr"
+      | "editable"
+      | "canStyle"
     > | null = null;
     for (let index = 0; index < charCount; index += 1) {
       const codePoint = this.m.FPDFText_GetUnicode(textPage, index);
@@ -240,6 +286,8 @@ export class PdfiumTextEngine {
         | "italic"
         | "color"
         | "fontPtr"
+        | "editable"
+        | "canStyle"
       > | null = lastStyle;
       if (objPtr) {
         const textFontSize = Math.max(
@@ -256,6 +304,8 @@ export class PdfiumTextEngine {
           italic: font.italic,
           color: this.objectColor(objPtr),
           fontPtr: font.fontPtr,
+          editable: font.embedded || font.standard || font.fallback,
+          canStyle: font.canStyle,
         };
         lastStyle = style;
       }
@@ -282,6 +332,8 @@ export class PdfiumTextEngine {
         italic: style.italic,
         color: style.color,
         fontPtr: style.fontPtr,
+        editable: style.editable,
+        canStyle: style.canStyle,
         matrix,
       });
     }
@@ -291,14 +343,49 @@ export class PdfiumTextEngine {
   }
 
   /**
-   * Apply edits to the live PDFium document and return new PDF bytes.
-   * Failed runs are reverted and reported; the caller overlays them.
+   * Apply edits and translations to the live PDFium document and return new
+   * PDF bytes. Failed runs are reverted and reported; the caller overlays them.
    */
-  applyEdits(edits: PdfiumTextEdit[]): PdfiumApplyResult {
+  applyEdits(
+    edits: PdfiumTextEdit[],
+    moves: PdfiumTextMove[] = [],
+  ): PdfiumApplyResult {
     if (this.destroyed) throw new Error("PDFium è già stato chiuso.");
     const failed: PdfiumTextEdit[] = [];
+    const failedMoves: PdfiumTextMove[] = [];
     let applied = 0;
 
+    // Snapshot the runs before mutating: after a move, run keys and
+    // coordinates change, but the object pointers stay valid.
+    const pageIndexes = new Set<number>();
+    for (const edit of edits) pageIndexes.add(edit.pageIndex);
+    for (const move of moves) pageIndexes.add(move.pageIndex);
+    const runsByKey = new Map<string, PdfiumTextRun>();
+    for (const pageIndex of pageIndexes) {
+      for (const run of this.readPage(pageIndex, 0)) {
+        runsByKey.set(run.key, run);
+      }
+    }
+
+    const movedPages = new Set<number>();
+    for (const move of moves) {
+      if (!move.dx && !move.dy) continue;
+      const run = runsByKey.get(move.key);
+      if (!run || !this.translateRun(run, move.dx, move.dy)) {
+        failedMoves.push(move);
+        continue;
+      }
+      movedPages.add(move.pageIndex);
+      applied += 1;
+    }
+    for (const pageIndex of movedPages) {
+      const pagePtr = this.page(pageIndex);
+      if (!pagePtr || !this.m.FPDFPage_GenerateContent(pagePtr)) {
+        throw new Error("PDFium: impossibile rigenerare la pagina.");
+      }
+    }
+
+    const moveByKey = new Map(moves.map((move) => [move.key, move]));
     for (const edit of edits) {
       const hasFormat =
         edit.boldOverride !== undefined ||
@@ -313,12 +400,20 @@ export class PdfiumTextEngine {
         failed.push(edit);
         continue;
       }
-      const run = this.matchRun(edit);
+      const run = runsByKey.get(edit.key) ?? this.matchRun(edit);
       if (!run) {
         failed.push(edit);
         continue;
       }
-      if (this.applyRun(pagePtr, edit.pageIndex, run, edit)) {
+      if (
+        this.applyRun(
+          pagePtr,
+          edit.pageIndex,
+          run,
+          edit,
+          moveByKey.get(edit.key),
+        )
+      ) {
         applied += 1;
       } else {
         failed.push(edit);
@@ -326,9 +421,30 @@ export class PdfiumTextEngine {
     }
 
     if (applied === 0) {
-      return { bytes: this.openedBytes, failed };
+      return { bytes: this.openedBytes, failed, failedMoves };
     }
-    return { bytes: this.save(), failed };
+    return { bytes: this.save(), failed, failedMoves };
+  }
+
+  private translateRun(
+    run: PdfiumTextRun,
+    dx: number,
+    dy: number,
+  ): boolean {
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+    if (!run.members.length) return false;
+    for (const member of run.members) {
+      if (!member.objPtr) return false;
+      // Display coordinates grow downwards; PDF user space grows upwards.
+      this.m.FPDFPageObj_Transform(member.objPtr, 1, 0, 0, 1, dx, -dy);
+    }
+    return true;
+  }
+
+  /** Embedded font bytes for the given run, or null when it is not embedded. */
+  fontBytes(run: PdfiumTextRun): Uint8Array | null {
+    const fontPtr = run.members[0]?.fontPtr ?? 0;
+    return this.readFontBytes(fontPtr);
   }
 
   private applyRun(
@@ -336,12 +452,16 @@ export class PdfiumTextEngine {
     pageIndex: number,
     run: PdfiumTextRun,
     edit: PdfiumTextEdit,
+    move?: PdfiumTextMove,
   ): boolean {
     const style = editStyle(run, edit);
     const hasLayoutFormat =
       edit.boldOverride !== undefined ||
       edit.italicOverride !== undefined ||
       edit.fontSizeOverride !== undefined;
+    const wantsBoldItalic =
+      edit.boldOverride !== undefined || edit.italicOverride !== undefined;
+    if (wantsBoldItalic && !run.canStyle) return false;
     if (
       !hasLayoutFormat &&
       this.applyExistingRun(pagePtr, pageIndex, run, edit)
@@ -352,7 +472,7 @@ export class PdfiumTextEngine {
       run.members.find((member) => member.text.trim().length > 0) ??
       run.members[0];
     if (target) {
-      if (!hasLayoutFormat) {
+      if (!hasLayoutFormat || (!wantsBoldItalic && this.canReuseFont(run))) {
         const embeddedFont = this.loadEmbeddedFont(target.fontPtr);
         if (
           embeddedFont &&
@@ -363,39 +483,55 @@ export class PdfiumTextEngine {
             edit,
             embeddedFont,
             style,
+            move,
           )
         ) {
           return true;
         }
       }
-      const fallbackFont = this.loadFallbackFont(run, style);
-      if (
-        fallbackFont &&
-        this.applyReplacementRun(
-          pagePtr,
-          pageIndex,
-          run,
-          edit,
-          fallbackFont,
-          style,
-        )
-      ) {
-        return true;
+      if (isStandardFamily(run)) {
+        const standardFont = this.m.FPDFText_LoadStandardFont(
+          this.docPtr,
+          standardFontName(run, style),
+        );
+        if (
+          standardFont &&
+          this.applyReplacementRun(
+            pagePtr,
+            pageIndex,
+            run,
+            edit,
+            standardFont,
+            style,
+            move,
+          )
+        ) {
+          return true;
+        }
+      }
+      if (isFallbackFamily(run)) {
+        const fallbackFont = this.loadFallbackFont(run, style);
+        if (
+          fallbackFont &&
+          this.applyReplacementRun(
+            pagePtr,
+            pageIndex,
+            run,
+            edit,
+            fallbackFont,
+            style,
+            move,
+          )
+        ) {
+          return true;
+        }
       }
     }
-    const standardFont = this.m.FPDFText_LoadStandardFont(
-      this.docPtr,
-      standardFontName(run, style),
-    );
-    if (!standardFont) return false;
-    return this.applyReplacementRun(
-      pagePtr,
-      pageIndex,
-      run,
-      edit,
-      standardFont,
-      style,
-    );
+    return false;
+  }
+
+  private canReuseFont(run: PdfiumTextRun): boolean {
+    return run.members.some((member) => member.fontPtr !== 0);
   }
 
   private loadFallbackFont(
@@ -542,47 +678,27 @@ export class PdfiumTextEngine {
    * round-trip check and fall through to the standard-font path.
    */
   private loadEmbeddedFont(fontPtr: number): number | null {
-    if (!fontPtr) return null;
-    const sizePtr = this.m.pdfium.wasmExports.malloc(4);
-    if (!sizePtr) return null;
-    let size = 0;
-    try {
-      if (!this.m.FPDFFont_GetFontData(fontPtr, 0, 0, sizePtr)) {
-        this.m.pdfium.wasmExports.free(sizePtr);
-        return null;
-      }
-      size = this.m.pdfium.getValue(sizePtr, "i32");
-    } finally {
-      this.m.pdfium.wasmExports.free(sizePtr);
-    }
-    if (!size || size < 0) return null;
-    const dataPtr = this.m.pdfium.wasmExports.malloc(size);
+    const bytes = this.readFontBytes(fontPtr);
+    if (!bytes || bytes.length === 0) return null;
+    const dataPtr = this.m.pdfium.wasmExports.malloc(bytes.length);
     if (!dataPtr) return null;
     try {
-      const outPtr = this.m.pdfium.wasmExports.malloc(4);
-      if (!outPtr) {
-        this.m.pdfium.wasmExports.free(dataPtr);
-        return null;
-      }
-      let ok = false;
-      try {
-        ok = this.m.FPDFFont_GetFontData(fontPtr, dataPtr, size, outPtr);
-      } finally {
-        this.m.pdfium.wasmExports.free(outPtr);
-      }
-      if (!ok) {
-        this.m.pdfium.wasmExports.free(dataPtr);
-        return null;
-      }
+      heapOf(this.m).set(bytes, dataPtr);
       let loaded = this.m.FPDFText_LoadFont(
         this.docPtr,
         dataPtr,
-        size,
+        bytes.length,
         2,
         false,
       );
       if (!loaded) {
-        loaded = this.m.FPDFText_LoadFont(this.docPtr, dataPtr, size, 1, false);
+        loaded = this.m.FPDFText_LoadFont(
+          this.docPtr,
+          dataPtr,
+          bytes.length,
+          1,
+          false,
+        );
       }
       if (!loaded) {
         this.m.pdfium.wasmExports.free(dataPtr);
@@ -596,6 +712,55 @@ export class PdfiumTextEngine {
     }
   }
 
+  private readFontBytes(fontPtr: number): Uint8Array | null {
+    if (!fontPtr) return null;
+    const cached = this.fontDataCache.get(fontPtr);
+    if (cached !== undefined) return cached;
+    const sizePtr = this.m.pdfium.wasmExports.malloc(4);
+    if (!sizePtr) return null;
+    let size = 0;
+    try {
+      if (!this.m.FPDFFont_GetFontData(fontPtr, 0, 0, sizePtr)) {
+        this.fontDataCache.set(fontPtr, null);
+        return null;
+      }
+      size = this.m.pdfium.getValue(sizePtr, "i32");
+    } catch {
+      this.fontDataCache.set(fontPtr, null);
+      return null;
+    } finally {
+      this.m.pdfium.wasmExports.free(sizePtr);
+    }
+    if (!size || size < 0) {
+      this.fontDataCache.set(fontPtr, null);
+      return null;
+    }
+    const dataPtr = this.m.pdfium.wasmExports.malloc(size);
+    if (!dataPtr) return null;
+    try {
+      const outPtr = this.m.pdfium.wasmExports.malloc(4);
+      if (!outPtr) return null;
+      let ok = false;
+      try {
+        ok = this.m.FPDFFont_GetFontData(fontPtr, dataPtr, size, outPtr);
+      } finally {
+        this.m.pdfium.wasmExports.free(outPtr);
+      }
+      if (!ok) {
+        this.fontDataCache.set(fontPtr, null);
+        return null;
+      }
+      const bytes = heapOf(this.m).slice(dataPtr, dataPtr + size);
+      this.fontDataCache.set(fontPtr, bytes);
+      return bytes;
+    } catch {
+      this.fontDataCache.set(fontPtr, null);
+      return null;
+    } finally {
+      this.m.pdfium.wasmExports.free(dataPtr);
+    }
+  }
+
   private applyReplacementRun(
     pagePtr: number,
     pageIndex: number,
@@ -603,6 +768,7 @@ export class PdfiumTextEngine {
     edit: PdfiumTextEdit,
     fontPtr: number,
     style: EditStyle,
+    move?: PdfiumTextMove,
   ): boolean {
     const target =
       run.members.find((member) => member.text.trim().length > 0) ??
@@ -638,7 +804,16 @@ export class PdfiumTextEngine {
       }
       const { r, g, b } = hexToRgb(style.color);
       this.m.FPDFPageObj_SetFillColor(objectPtr, r, g, b, 255);
-      this.setObjectMatrix(objectPtr, target.matrix);
+      this.setObjectMatrix(
+        objectPtr,
+        move
+          ? {
+              ...target.matrix,
+              e: target.matrix.e + move.dx,
+              f: target.matrix.f - move.dy,
+            }
+          : target.matrix,
+      );
       this.m.FPDFPage_InsertObject(pagePtr, objectPtr);
       inserted = true;
       if (!this.m.FPDFPage_GenerateContent(pagePtr)) {
@@ -790,6 +965,8 @@ export class PdfiumTextEngine {
     this.pages.clear();
     this.textPages.clear();
     this.boxes.clear();
+    this.fontInfoCache.clear();
+    this.fontDataCache.clear();
   }
 
   private page(pageIndex: number): number | null {
@@ -892,14 +1069,10 @@ export class PdfiumTextEngine {
     return Math.max(1, top - bottom);
   }
 
-  private objectFontInfo(objPtr: number): {
-    fontPtr: number;
-    fontFamily: FontFamily;
-    fontName: string;
-    bold: boolean;
-    italic: boolean;
-  } {
+  private objectFontInfo(objPtr: number): FontInfo {
     const fontPtr = this.m.FPDFTextObj_GetFont(objPtr);
+    const cached = this.fontInfoCache.get(fontPtr);
+    if (cached) return cached;
     let family = "";
     let base = "";
     let weight = 400;
@@ -922,13 +1095,22 @@ export class PdfiumTextEngine {
       : /times|serif/.test(name)
         ? "times"
         : "helvetica";
-    return {
+    const embedded = this.readFontBytes(fontPtr) !== null;
+    const standard = isStandardName(name);
+    const fallback = isFallbackName(name);
+    const info: FontInfo = {
       fontPtr,
       fontFamily,
       fontName: base || family,
       bold: weight >= 600 || /bold|black|heavy/.test(name),
       italic: /italic|oblique/.test(name),
+      embedded,
+      standard,
+      fallback,
+      canStyle: standard || fallback,
     };
+    if (fontPtr) this.fontInfoCache.set(fontPtr, info);
+    return info;
   }
 
   private fontName(read: (buffer: number, length: number) => number): string {
@@ -1092,6 +1274,9 @@ function groupChars(chars: RawChar[]): PdfiumTextRun[] {
       current.bold !== char.bold ||
       current.italic !== char.italic ||
       current.color !== char.color ||
+      current.editable !== char.editable ||
+      current.canStyle !== char.canStyle ||
+      current.members[0]?.fontPtr !== char.fontPtr ||
       Math.abs(current.y + current.h - (char.y + char.h)) >
         Math.max(2, char.fontSize * 0.35) ||
       char.x - (current.x + current.w) < -char.fontSize * 0.8 ||
@@ -1114,6 +1299,8 @@ function groupChars(chars: RawChar[]): PdfiumTextRun[] {
         bold: char.bold,
         italic: char.italic,
         color: char.color,
+        editable: char.editable,
+        canStyle: char.canStyle,
         members: [],
       };
       groups.push(group);
@@ -1147,6 +1334,24 @@ function isCollapsed(
   const visible = text.replace(/\s+/gu, "").length;
   if (visible === 0 || fontSize <= 0) return false;
   return bbox.right - bbox.left < visible * fontSize * MIN_INK_EM_PER_CHAR;
+}
+
+function isStandardName(name: string): boolean {
+  return /^(helvetica|times(?:[\s-]?(?:new[\s-]?)?roman)?|courier(?:[\s-]?new)?)(?:$|[\s,-])/i.test(
+    name,
+  );
+}
+
+function isFallbackName(name: string): boolean {
+  return /work\s*sans|worksans|liberation|arial|helvetica/i.test(name);
+}
+
+function isStandardFamily(run: PdfiumTextRun): boolean {
+  return isStandardName(run.fontName);
+}
+
+function isFallbackFamily(run: PdfiumTextRun): boolean {
+  return isFallbackName(run.fontName);
 }
 
 function standardFontName(run: PdfiumTextRun, style: EditStyle): string {

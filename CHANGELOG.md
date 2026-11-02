@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+
+- Original text lines are draggable with the Select tool. Moves are written as PDF object transforms, so the original font, colour and vector quality are preserved.
+- Text runs report `editable` and `canStyle`. When the font cannot be reused without changing the typeface, the editor offers move only instead of silently substituting a different font.
+- Embedded fonts are reused for the in-page editor preview through the browser `FontFace` API, with a local fallback when the embedded program is not browser-compatible.
+- Bold and italic controls are disabled for embedded fonts that have no matching variant.
+- `PdfiumTextEngine.applyEdits(edits, moves)` accepts translations; `PdfiumTextMove` is exported.
+
 ## 0.8.0
 
 - Editor visual refresh aligned with the pdf.eneawork.it editor: icon-first toolbar, wider page rail and inspector, larger thumbnails, serif headings and page summary cards.

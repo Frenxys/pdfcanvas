@@ -55,6 +55,7 @@ export const STYLES = `
 }
 .pc-obj {
   position: absolute;
+  z-index: 40;
   pointer-events: auto;
   user-select: none;
   -webkit-user-select: none;
@@ -113,7 +114,10 @@ export const STYLES = `
   cursor: text;
   border: 1px dashed transparent;
   border-radius: 2px;
+  touch-action: none;
 }
+.pc-orig-hit.pc-orig-move { cursor: move; }
+.pc-orig-hit.pc-orig-locked { cursor: not-allowed; }
 .pc-orig-hit:hover {
   border-color: var(--pc-accent);
   background: rgba(107, 78, 255, 0.08);
@@ -127,6 +131,29 @@ export const STYLES = `
   padding: 0;
   margin: 0;
   border-radius: 1px;
+}
+.pc-orig-cover {
+  position: absolute;
+  z-index: 19;
+  pointer-events: none;
+  border-radius: 1px;
+}
+.pc-orig-ghost {
+  position: absolute;
+  z-index: 22;
+  pointer-events: none;
+  white-space: pre;
+  line-height: 1.25;
+  padding: 0;
+  margin: 0;
+  border-radius: 1px;
+}
+.pc-orig-selection {
+  position: absolute;
+  z-index: 91;
+  pointer-events: none;
+  border: 1.5px dashed var(--pc-accent);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
 }
 .pc-orig-editor {
   position: absolute;

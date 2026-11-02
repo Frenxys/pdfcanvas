@@ -14,7 +14,8 @@
 
 - **PDF.js rendering** with lazy pages, zoom, fit-to-width and DPR-aware canvases.
 - **Edit existing PDF text in place** with PDFium WASM, the same engine Chrome uses. Per-character PDFs are grouped into editable line runs.
-- **Font matching** with bundled Work Sans and Arial-metric Liberation Sans when the original embedded font cannot be reused.
+- **Move existing text safely** with the Select tool. The line is translated as a real PDF object, so the original font stays intact.
+- **Font matching** with the embedded font first, then bundled Work Sans and Arial-metric Liberation Sans only for families they actually replace. Unsupported runs are move-only instead of being silently restyled.
 - **Scene objects**: text, images, rectangles, ellipses, lines, freehand pen, highlighter and whiteout.
 - **Direct manipulation**: drag, resize, centre snapping, arrow-key nudge, duplicate, z-order, delete.
 - **Text editing** in place, with font family, size, weight, style, colour and alignment.
@@ -57,7 +58,7 @@ editor.addShape("rect", { x: 80, y: 180, width: 200, height: 90 });
 await editor.download();            // downloads "file-pdfcanvas.pdf"
 ```
 
-Existing text can be edited with the `text-edit` tool, or by double-clicking a text line with the Select tool. Use `updateOriginalText()` to change the selected line's bold/italic/size/colour:
+Existing text can be edited with the `text-edit` tool, or by double-clicking a text line with the Select tool. Dragging a text line with the Select tool moves the original PDF object without changing its font. Use `updateOriginalText()` to change the selected line's bold/italic/size/colour when the font supports it:
 
 ```ts
 editor.on("originaledit", ({ edit }) => {

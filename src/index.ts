@@ -10,6 +10,7 @@ export { PdfiumTextEngine } from "./pdfium";
 export type {
   PdfiumApplyResult,
   PdfiumTextEdit,
+  PdfiumTextMove,
   PdfiumTextRun,
 } from "./pdfium";
 export { STYLES } from "./styles";

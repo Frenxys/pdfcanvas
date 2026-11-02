@@ -3,6 +3,7 @@ import { buildPdf } from "./export";
 import {
   PdfiumTextEngine,
   type PdfiumTextEdit,
+  type PdfiumTextMove,
   type PdfiumTextRun,
 } from "./pdfium";
 import {
@@ -53,7 +54,7 @@ import type {
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
 interface DragState {
-  kind: "move" | "resize" | "draw" | "line" | "pen";
+  kind: "move" | "resize" | "draw" | "line" | "pen" | "original";
   page: PageState;
   object: SceneObject | null;
   start: { x: number; y: number };
@@ -61,6 +62,14 @@ interface DragState {
   handle?: string;
   points?: Array<[number, number]>;
   moved: boolean;
+  run?: PdfiumTextRun;
+  dx?: number;
+  dy?: number;
+  originDx?: number;
+  originDy?: number;
+  cover?: HTMLElement;
+  ghost?: HTMLElement;
+  background?: string;
 }
 
 interface EditState {
@@ -132,6 +141,12 @@ export class PdfCanvas {
   private textRuns = new Map<string, PdfiumTextRun[]>();
   private textRunsLoading = new Set<string>();
   private textEdits = new Map<string, PdfiumTextEdit>();
+  private originalMoves = new Map<string, PdfiumTextMove>();
+  private selectedOriginalKey: string | null = null;
+  private selectedOriginalPageId: string | null = null;
+  private runFontFaces = new Map<number, string>();
+  private fontFaceGeneration = 0;
+  private lockedRunsReported = new Set<string>();
   private originalEdit: {
     page: PageState;
     run: PdfiumTextRun;
@@ -384,6 +399,12 @@ export class PdfCanvas {
     this.textRuns.clear();
     this.textRunsLoading.clear();
     this.textEdits.clear();
+    this.originalMoves.clear();
+    this.selectedOriginalKey = null;
+    this.selectedOriginalPageId = null;
+    this.runFontFaces.clear();
+    this.fontFaceGeneration += 1;
+    this.lockedRunsReported.clear();
     this.activeOriginalKey = null;
     this.activeOriginalPageId = null;
     this.rotationWarningShown = false;
@@ -558,7 +579,13 @@ export class PdfCanvas {
       this.renderTasks.set(page.id, task);
       await task.promise;
       this.renderTasks.delete(page.id);
-      if (this.tool === "text-edit") void this.ensureTextRuns(page);
+      if (this.tool === "text-edit") {
+        void this.ensureTextRuns(page);
+      } else if (this.tool === "select" && totalRotation(page) === 0) {
+        void this.ensureTextRuns(page, false);
+      } else {
+        this.renderOriginalText(page);
+      }
     } catch (error) {
       const name = (error as { name?: string } | null)?.name;
       if (name !== "RenderingCancelledException") {
@@ -799,7 +826,10 @@ export class PdfCanvas {
     document.head.appendChild(style);
   }
 
-  private fontCssForRun(run: PdfiumTextRun): string {
+  private fontCssForRun(
+    run: Pick<PdfiumTextRun, "fontCss" | "fontName" | "fontFamily">,
+  ): string {
+    if (run.fontCss) return `${run.fontCss}, ${FONT_CSS[run.fontFamily]}`;
     if (this.options.fontAssetsUrl) {
       const name = run.fontName.toLowerCase();
       if (/work\s*sans|worksans/.test(name)) {
@@ -844,7 +874,7 @@ export class PdfCanvas {
     return this.pdfiumLoading;
   }
 
-  private async ensureTextRuns(page: PageState): Promise<void> {
+  private async ensureTextRuns(page: PageState, warn = true): Promise<void> {
     if (this.textRuns.has(page.id) || this.textRunsLoading.has(page.id)) return;
     if (page.sourceIndex === null) {
       this.textRuns.set(page.id, []);
@@ -852,7 +882,7 @@ export class PdfCanvas {
     }
     if (totalRotation(page) !== 0) {
       this.textRuns.set(page.id, []);
-      if (!this.rotationWarningShown) {
+      if (warn && !this.rotationWarningShown) {
         this.rotationWarningShown = true;
         this.fail(
           new Error(
@@ -867,6 +897,7 @@ export class PdfCanvas {
       const engine = await this.ensurePdfium();
       if (!this.pageEls.has(page.id)) return;
       const runs = engine.readPage(page.sourceIndex, totalRotation(page));
+      await this.registerRunFonts(engine, runs);
       this.textRuns.set(page.id, runs);
       this.renderOriginalText(page);
     } catch (error) {
@@ -877,6 +908,44 @@ export class PdfCanvas {
     }
   }
 
+  private async registerRunFonts(
+    engine: PdfiumTextEngine,
+    runs: PdfiumTextRun[],
+  ): Promise<void> {
+    if (typeof document === "undefined" || typeof FontFace === "undefined") {
+      return;
+    }
+    for (const run of runs) {
+      const fontPtr = run.members[0]?.fontPtr ?? 0;
+      if (!fontPtr) continue;
+      let family = this.runFontFaces.get(fontPtr);
+      if (family === undefined) {
+        family = "";
+        const bytes = engine.fontBytes(run);
+        if (bytes && looksLikeBrowserFont(bytes)) {
+          const name = `pc-run-${this.fontFaceGeneration}-${fontPtr}`;
+          try {
+            const face = new FontFace(
+              name,
+              bytes.buffer.slice(
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength,
+              ) as ArrayBuffer,
+            );
+            await face.load();
+            document.fonts.add(face);
+            family = name;
+          } catch {
+            // CFF and malformed fonts often fail in the browser; PDFium can
+            // still export them, the editor preview falls back to the family.
+          }
+        }
+        this.runFontFaces.set(fontPtr, family);
+      }
+      if (family) run.fontCss = `"${family}"`;
+    }
+  }
+
   private renderOriginalText(page: PageState) {
     const overlay = this.pageEls
       .get(page.id)
@@ -884,63 +953,207 @@ export class PdfCanvas {
     if (!overlay) return;
     if (this.originalEdit?.page.id === page.id) return;
     overlay
-      .querySelectorAll(".pc-orig-hit, .pc-orig-preview, .pc-orig-editor")
+      .querySelectorAll(
+        ".pc-orig-hit, .pc-orig-preview, .pc-orig-editor, .pc-orig-selection, .pc-orig-cover, .pc-orig-ghost",
+      )
       .forEach((node) => node.remove());
 
-    for (const edit of this.textEdits.values()) {
-      if (edit.pageIndex !== page.sourceIndex) continue;
-      overlay.appendChild(this.createOriginalPreview(edit));
+    const moves = [...this.originalMoves.values()].filter(
+      (move) => move.pageIndex === page.sourceIndex,
+    );
+    const moveByKey = new Map(moves.map((move) => [move.key, move]));
+    const edits = [...this.textEdits.values()].filter(
+      (edit) => edit.pageIndex === page.sourceIndex,
+    );
+
+    if (
+      (edits.length > 0 || moves.length > 0) &&
+      !this.textRuns.has(page.id) &&
+      totalRotation(page) === 0 &&
+      (this.visible.has(page.id) ||
+        page.id === this.pages[this.currentPageIndex]?.id)
+    ) {
+      void this.ensureTextRuns(page, false);
     }
 
-    if (this.tool !== "text-edit") return;
+    for (const move of moves) {
+      overlay.appendChild(this.createOriginalCover(move));
+    }
+    for (const edit of edits) {
+      overlay.appendChild(
+        this.createOriginalPreview(edit, moveByKey.get(edit.key)),
+      );
+    }
+    for (const move of moves) {
+      if (this.textEdits.has(move.key)) continue;
+      overlay.appendChild(
+        this.createOriginalTextElement(
+          move,
+          undefined,
+          move.x + move.dx,
+          move.y + move.dy,
+          "transparent",
+          "pc-orig-ghost",
+        ),
+      );
+    }
+
+    this.renderOriginalSelection(page, overlay);
+
+    if (this.tool !== "select" && this.tool !== "text-edit") return;
     const runs = this.textRuns.get(page.id);
     if (!runs) {
       if (
-        this.visible.has(page.id) ||
-        page.id === this.pages[this.currentPageIndex]?.id
+        totalRotation(page) === 0 &&
+        (this.visible.has(page.id) ||
+          page.id === this.pages[this.currentPageIndex]?.id)
       ) {
-        void this.ensureTextRuns(page);
+        void this.ensureTextRuns(page, this.tool === "text-edit");
       }
       return;
     }
+
     for (const run of runs) {
+      const move = moveByKey.get(run.key);
       const hit = document.createElement("div");
       hit.className = "pc-orig-hit";
-      hit.style.left = `${run.x * this.zoom}px`;
-      hit.style.top = `${run.y * this.zoom}px`;
+      hit.style.left = `${(run.x + (move?.dx ?? 0)) * this.zoom}px`;
+      hit.style.top = `${(run.y + (move?.dy ?? 0)) * this.zoom}px`;
       hit.style.width = `${Math.max(12, run.w * this.zoom)}px`;
       hit.style.height = `${Math.max(10, run.h * this.zoom)}px`;
-      hit.title = "Modifica questo testo";
       hit.dataset.originalText = run.text;
-      hit.setAttribute("aria-label", `Modifica testo: ${run.text}`);
-      hit.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.beginOriginalTextEdit(page, run, event);
-      });
+      hit.dataset.originalKey = run.key;
+
+      if (this.tool === "select") {
+        hit.classList.add("pc-orig-move");
+        hit.title = run.editable
+          ? "Trascina per spostare, doppio clic per modificare"
+          : "Trascina per spostare (font non modificabile)";
+        hit.setAttribute("aria-label", `Testo: ${run.text}`);
+        hit.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          this.beginOriginalMove(event, page, run);
+        });
+        hit.addEventListener("dblclick", (event) => {
+          if (!run.editable) {
+            this.reportNonEditable(run);
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          this.beginOriginalTextEdit(page, run, event);
+        });
+      } else if (run.editable) {
+        hit.title = "Modifica questo testo";
+        hit.setAttribute("aria-label", `Modifica testo: ${run.text}`);
+        hit.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.beginOriginalTextEdit(page, run, event);
+        });
+      } else {
+        hit.classList.add("pc-orig-locked");
+        hit.title =
+          "Font non disponibile: usa Seleziona per spostare il testo";
+        hit.setAttribute("aria-label", `Testo non modificabile: ${run.text}`);
+        hit.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.reportNonEditable(run);
+        });
+      }
       overlay.appendChild(hit);
     }
   }
 
-  private createOriginalPreview(edit: PdfiumTextEdit): HTMLDivElement {
+  private renderOriginalSelection(page: PageState, overlay: HTMLElement) {
+    if (
+      !this.selectedOriginalKey ||
+      this.selectedOriginalPageId !== page.id
+    ) {
+      return;
+    }
+    const move = this.originalMoves.get(this.selectedOriginalKey);
+    const edit = this.textEdits.get(this.selectedOriginalKey);
+    const run = this.textRuns
+      .get(page.id)
+      ?.find((item) => item.key === this.selectedOriginalKey);
+    const source = edit ?? run ?? move;
+    if (!source) return;
+    const selection = document.createElement("div");
+    selection.className = "pc-orig-selection";
+    selection.style.left = `${(source.x + (move?.dx ?? 0)) * this.zoom}px`;
+    selection.style.top = `${(source.y + (move?.dy ?? 0)) * this.zoom}px`;
+    selection.style.width = `${Math.max(12, source.w * this.zoom)}px`;
+    selection.style.height = `${Math.max(10, source.h * this.zoom)}px`;
+    overlay.appendChild(selection);
+  }
+
+  private createOriginalCover(
+    move: Pick<PdfiumTextMove, "x" | "y" | "w" | "h" | "background">,
+  ): HTMLDivElement {
+    const cover = document.createElement("div");
+    cover.className = "pc-orig-cover";
+    cover.style.left = `${move.x * this.zoom}px`;
+    cover.style.top = `${move.y * this.zoom}px`;
+    cover.style.width = `${Math.max(1, move.w * this.zoom)}px`;
+    cover.style.height = `${Math.max(1, move.h * this.zoom)}px`;
+    cover.style.background = move.background;
+    return cover;
+  }
+
+  private createOriginalPreview(
+    edit: PdfiumTextEdit,
+    move?: PdfiumTextMove,
+  ): HTMLDivElement {
+    return this.createOriginalTextElement(
+      edit,
+      edit,
+      edit.x + (move?.dx ?? 0),
+      edit.y + (move?.dy ?? 0),
+      move ? "transparent" : edit.background,
+      "pc-orig-preview",
+    );
+  }
+
+  private createOriginalTextElement(
+    source: PdfiumTextRun | PdfiumTextMove,
+    edit: PdfiumTextEdit | undefined,
+    x: number,
+    y: number,
+    background: string,
+    className: string,
+  ): HTMLDivElement {
     const preview = document.createElement("div");
-    preview.className = "pc-orig-preview";
-    const fontSize = edit.fontSizeOverride ?? edit.fontSize;
-    const color = edit.colorOverride ?? edit.color;
-    const bold = edit.boldOverride ?? edit.bold;
-    const italic = edit.italicOverride ?? edit.italic;
-    preview.style.left = `${edit.x * this.zoom}px`;
-    preview.style.top = `${edit.y * this.zoom}px`;
-    preview.style.minWidth = `${edit.w * this.zoom}px`;
-    preview.style.minHeight = `${edit.h * this.zoom}px`;
+    preview.className = className;
+    const fontSize = edit?.fontSizeOverride ?? edit?.fontSize ?? source.fontSize;
+    const color = edit?.colorOverride ?? edit?.color ?? source.color;
+    const bold = edit?.boldOverride ?? edit?.bold ?? source.bold;
+    const italic = edit?.italicOverride ?? edit?.italic ?? source.italic;
+    preview.style.left = `${x * this.zoom}px`;
+    preview.style.top = `${y * this.zoom}px`;
+    preview.style.minWidth = `${source.w * this.zoom}px`;
+    preview.style.minHeight = `${source.h * this.zoom}px`;
     preview.style.fontSize = `${fontSize * this.zoom}px`;
-    preview.style.fontFamily = this.fontCssForRun(edit);
+    preview.style.fontFamily = this.fontCssForRun(edit ?? source);
     preview.style.fontWeight = bold ? "700" : "400";
     preview.style.fontStyle = italic ? "italic" : "normal";
     preview.style.color = color;
-    preview.style.background = edit.background;
-    preview.textContent = edit.newText;
+    preview.style.background = background;
+    preview.textContent = edit?.newText ?? source.text;
     return preview;
+  }
+
+  private reportNonEditable(run: PdfiumTextRun) {
+    if (this.lockedRunsReported.has(run.key)) return;
+    this.lockedRunsReported.add(run.key);
+    this.fail(
+      new Error(
+        "Questo testo usa un font che l'editor non riesce a riutilizzare. Puoi spostarlo con lo strumento Seleziona, ma non modificarlo senza cambiare font.",
+      ),
+    );
   }
 
   private beginOriginalTextEdit(
@@ -948,10 +1161,19 @@ export class PdfCanvas {
     run: PdfiumTextRun,
     event?: PointerEvent | MouseEvent,
   ) {
+    if (!run.editable) {
+      this.reportNonEditable(run);
+      return;
+    }
     if (this.originalEdit) this.finishOriginalEdit();
     this.beginMutation();
     const existing = this.textEdits.get(run.key);
-    const background = existing?.background ?? this.sampleBackground(page, run);
+    const move = this.originalMoves.get(run.key);
+    const offsetX = move?.dx ?? 0;
+    const offsetY = move?.dy ?? 0;
+    const background =
+      existing?.background ??
+      this.sampleBackground(page, run, offsetX, offsetY);
     const fontSize = existing?.fontSizeOverride ?? run.fontSize;
     const color = existing?.colorOverride ?? run.color;
     const bold = existing?.boldOverride ?? run.bold;
@@ -962,8 +1184,8 @@ export class PdfCanvas {
     editor.spellcheck = true;
     editor.setAttribute("role", "textbox");
     editor.setAttribute("aria-label", "Modifica testo originale");
-    editor.style.left = `${run.x * this.zoom}px`;
-    editor.style.top = `${run.y * this.zoom}px`;
+    editor.style.left = `${(run.x + offsetX) * this.zoom}px`;
+    editor.style.top = `${(run.y + offsetY) * this.zoom}px`;
     editor.style.minWidth = `${Math.max(12, run.w * this.zoom)}px`;
     editor.style.minHeight = `${Math.max(10, run.h * this.zoom)}px`;
     editor.style.fontSize = `${fontSize * this.zoom}px`;
@@ -1109,13 +1331,30 @@ export class PdfCanvas {
       .get(page.id)
       ?.find((item) => item.key === this.activeOriginalKey);
     if (!run) return;
+    if (
+      (patch.boldOverride !== undefined || patch.italicOverride !== undefined) &&
+      !run.canStyle
+    ) {
+      this.fail(
+        new Error(
+          "Questo font incorporato non ha una variante grassetto o corsivo: il testo può essere modificato solo mantenendo il font originale.",
+        ),
+      );
+      return;
+    }
+    const move = this.originalMoves.get(run.key);
     const existing = this.textEdits.get(run.key);
     const edit: PdfiumTextEdit = {
       ...(existing ?? {
         ...run,
         newText: run.text,
         originalText: run.text,
-        background: this.sampleBackground(page, run),
+        background: this.sampleBackground(
+          page,
+          run,
+          move?.dx ?? 0,
+          move?.dy ?? 0,
+        ),
       }),
       ...patch,
     };
@@ -1152,7 +1391,12 @@ export class PdfCanvas {
     this.emit("change", { reason: "load" });
   }
 
-  private sampleBackground(page: PageState, run: PdfiumTextRun): string {
+  private sampleBackground(
+    page: PageState,
+    run: Pick<PdfiumTextRun, "x" | "y" | "w" | "h">,
+    offsetX = 0,
+    offsetY = 0,
+  ): string {
     const canvas = this.pageEls.get(page.id)?.querySelector("canvas");
     if (!canvas) return "#ffffff";
     const context = canvas.getContext("2d");
@@ -1161,13 +1405,15 @@ export class PdfCanvas {
     const scaleX = canvas.width / Math.max(1, displayWidth);
     const scaleY = canvas.height / Math.max(1, displayHeight);
     const samples: Array<[number, number, number]> = [];
+    const x = run.x + offsetX;
+    const y = run.y + offsetY;
     const points: Array<[number, number]> = [
-      [run.x - 3, run.y - 3],
-      [run.x + run.w + 3, run.y - 3],
-      [run.x - 3, run.y + run.h + 3],
-      [run.x + run.w + 3, run.y + run.h + 3],
-      [run.x + run.w / 2, run.y - 3],
-      [run.x + run.w / 2, run.y + run.h + 3],
+      [x - 3, y - 3],
+      [x + run.w + 3, y - 3],
+      [x - 3, y + run.h + 3],
+      [x + run.w + 3, y + run.h + 3],
+      [x + run.w / 2, y - 3],
+      [x + run.w / 2, y + run.h + 3],
     ];
     for (const [x, y] of points) {
       const px = clamp(Math.round(x * scaleX), 0, canvas.width - 1);
@@ -1189,11 +1435,18 @@ export class PdfCanvas {
       .join("")}`;
   }
 
-  private pagesWithFallback(edits: PdfiumTextEdit[]): PageState[] {
+  private pagesWithFallback(
+    edits: PdfiumTextEdit[],
+    moves: PdfiumTextMove[] = [],
+  ): PageState[] {
     const pages = deepClone(this.pages);
+    const moveByKey = new Map(moves.map((move) => [move.key, move]));
     for (const edit of edits) {
       const page = pages.find((item) => item.sourceIndex === edit.pageIndex);
       if (!page) continue;
+      const move = moveByKey.get(edit.key);
+      const x = edit.x + (move?.dx ?? 0);
+      const y = edit.y + (move?.dy ?? 0);
       const fontSize = edit.fontSizeOverride ?? edit.fontSize;
       const color = edit.colorOverride ?? edit.color;
       const bold = edit.boldOverride ?? edit.bold;
@@ -1209,8 +1462,8 @@ export class PdfCanvas {
         id: uid(),
         type: "shape",
         shape: "rect",
-        x: edit.x,
-        y: edit.y,
+        x,
+        y,
         w: edit.w,
         h: edit.h,
         opacity: 1,
@@ -1221,8 +1474,8 @@ export class PdfCanvas {
       page.objects.push({
         id: uid(),
         type: "text",
-        x: edit.x,
-        y: edit.y,
+        x,
+        y,
         w: measured.width,
         h: measured.height,
         opacity: 1,
@@ -1242,13 +1495,20 @@ export class PdfCanvas {
     bytes: Uint8Array | null;
     pages: PageState[];
   }> {
-    if (this.textEdits.size === 0 || !this.sourceBytes) {
+    if (
+      (this.textEdits.size === 0 && this.originalMoves.size === 0) ||
+      !this.sourceBytes
+    ) {
       return { bytes: this.sourceBytes, pages: this.pages };
     }
     const edits = [...this.textEdits.values()];
+    const moves = [...this.originalMoves.values()];
     try {
       if (!this.options.pdfiumWasmUrl) {
-        return { bytes: this.sourceBytes, pages: this.pagesWithFallback(edits) };
+        return {
+          bytes: this.sourceBytes,
+          pages: this.pagesWithFallback(edits, moves),
+        };
       }
       // Apply on a fresh document every time. The live PDFium instance must not
       // accumulate mutations: otherwise undo would keep a text change that is no
@@ -1259,12 +1519,19 @@ export class PdfCanvas {
         this.options.fontAssetsUrl,
       );
       try {
-        const result = engine.applyEdits(edits);
+        const result = engine.applyEdits(edits, moves);
+        if (result.failedMoves.length > 0) {
+          this.fail(
+            new Error(
+              "Una parte del testo originale non può essere spostata in questo PDF.",
+            ),
+          );
+        }
         return {
           bytes: result.bytes,
           pages:
             result.failed.length > 0
-              ? this.pagesWithFallback(result.failed)
+              ? this.pagesWithFallback(result.failed, moves)
               : this.pages,
         };
       } finally {
@@ -1272,7 +1539,10 @@ export class PdfCanvas {
       }
     } catch (error) {
       this.fail(error);
-      return { bytes: this.sourceBytes, pages: this.pagesWithFallback(edits) };
+      return {
+        bytes: this.sourceBytes,
+        pages: this.pagesWithFallback(edits, moves),
+      };
     }
   }
 
@@ -1282,10 +1552,33 @@ export class PdfCanvas {
     if (this.editingState) this.finishEdit();
     if (this.originalEdit) this.finishOriginalEdit();
     if (this.activeOriginalKey) this.clearOriginalTextFocus();
+    this.clearOriginalSelection();
     this.selectedPageId = pageId;
     this.selectedObjectId = objectId;
     this.renderSelection();
     this.emit("selectionchange", { object: this.getSelection() });
+  }
+
+  private clearOriginalSelection() {
+    if (!this.selectedOriginalKey && !this.selectedOriginalPageId) return;
+    this.selectedOriginalKey = null;
+    this.selectedOriginalPageId = null;
+    for (const page of this.pages) {
+      this.pageEls
+        .get(page.id)
+        ?.querySelectorAll(".pc-orig-selection")
+        .forEach((node) => node.remove());
+    }
+  }
+
+  private selectOriginal(page: PageState, run: PdfiumTextRun) {
+    this.clearOriginalSelection();
+    this.selectedPageId = page.id;
+    this.selectedObjectId = null;
+    this.selectedOriginalKey = run.key;
+    this.selectedOriginalPageId = page.id;
+    this.renderOriginalText(page);
+    this.emit("selectionchange", { object: null });
   }
 
   clearSelection() {
@@ -1702,6 +1995,7 @@ export class PdfCanvas {
       pages: this.pages,
       currentPage: this.currentPageIndex,
       textEdits: [...this.textEdits.values()],
+      originalMoves: [...this.originalMoves.values()],
     });
   }
 
@@ -1753,14 +2047,20 @@ export class PdfCanvas {
         pages: PageState[];
         currentPage: number;
         textEdits?: PdfiumTextEdit[];
+        originalMoves?: PdfiumTextMove[];
       };
       this.pages = parsed.pages;
       this.textEdits = new Map(
         (parsed.textEdits ?? []).map((edit) => [edit.key, edit]),
       );
+      this.originalMoves = new Map(
+        (parsed.originalMoves ?? []).map((move) => [move.key, move]),
+      );
       this.originalEdit = null;
       this.activeOriginalKey = null;
       this.activeOriginalPageId = null;
+      this.selectedOriginalKey = null;
+      this.selectedOriginalPageId = null;
       this.emit("originaledit", { edit: null });
       this.currentPageIndex = clamp(
         parsed.currentPage ?? 0,
@@ -2095,6 +2395,52 @@ export class PdfCanvas {
     this.attachDragListeners();
   }
 
+  private beginOriginalMove(
+    event: PointerEvent,
+    page: PageState,
+    run: PdfiumTextRun,
+  ) {
+    if (this.originalEdit) this.finishOriginalEdit();
+    if (this.editingState) this.finishEdit();
+    this.selectOriginal(page, run);
+    this.beginMutation();
+    const existing = this.originalMoves.get(run.key);
+    const dx = existing?.dx ?? 0;
+    const dy = existing?.dy ?? 0;
+    const background = existing?.background ?? this.sampleBackground(page, run);
+    const overlay = this.pageEls
+      .get(page.id)
+      ?.querySelector<HTMLElement>(".pc-overlay");
+    if (!overlay) return;
+    const cover = this.createOriginalCover({ ...run, background });
+    const ghost = this.createOriginalTextElement(
+      run,
+      this.textEdits.get(run.key),
+      run.x + dx,
+      run.y + dy,
+      "transparent",
+      "pc-orig-ghost",
+    );
+    overlay.append(cover, ghost);
+    this.drag = {
+      kind: "original",
+      page,
+      object: null,
+      run,
+      start: this.pointFromEvent(event, page),
+      original: null,
+      moved: false,
+      dx,
+      dy,
+      originDx: dx,
+      originDy: dy,
+      cover,
+      ghost,
+      background,
+    };
+    this.attachDragListeners();
+  }
+
   private startResize(
     event: PointerEvent,
     page: PageState,
@@ -2139,6 +2485,33 @@ export class PdfCanvas {
     if (drag.kind === "move" && drag.object && drag.original) {
       this.moveObject(drag.page, drag.object, drag.original, dx, dy);
       this.renderObjects(drag.page);
+    } else if (drag.kind === "original" && drag.run) {
+      const run = drag.run;
+      const [pageWidth, pageHeight] = displaySize(drag.page);
+      drag.dx = clamp(
+        (drag.originDx ?? 0) + dx,
+        -run.x,
+        Math.max(-run.x, pageWidth - run.x - run.w),
+      );
+      drag.dy = clamp(
+        (drag.originDy ?? 0) + dy,
+        -run.y,
+        Math.max(-run.y, pageHeight - run.y - run.h),
+      );
+      if (drag.ghost) {
+        drag.ghost.style.left = `${(run.x + drag.dx) * this.zoom}px`;
+        drag.ghost.style.top = `${(run.y + drag.dy) * this.zoom}px`;
+      }
+      const overlay = this.pageEls
+        .get(drag.page.id)
+        ?.querySelector<HTMLElement>(".pc-overlay");
+      const selection = overlay?.querySelector<HTMLElement>(
+        ".pc-orig-selection",
+      );
+      if (selection) {
+        selection.style.left = `${(run.x + drag.dx) * this.zoom}px`;
+        selection.style.top = `${(run.y + drag.dy) * this.zoom}px`;
+      }
     } else if (drag.kind === "resize" && drag.object && drag.original && drag.handle) {
       this.resizeObject(drag.object, drag.original, drag.handle, dx, dy);
       this.renderObjects(drag.page);
@@ -2170,6 +2543,8 @@ export class PdfCanvas {
     this.drag = null;
     this.detachDragListeners();
     this.clearGuides();
+    drag.cover?.remove();
+    drag.ghost?.remove();
     if (!drag.moved) {
       if (drag.kind === "draw" || drag.kind === "line" || drag.kind === "pen") {
         this.removeObject(drag.page, drag.object);
@@ -2178,6 +2553,42 @@ export class PdfCanvas {
       } else {
         this.abortMutation();
       }
+      if (drag.kind === "original" && drag.run) {
+        this.selectOriginal(drag.page, drag.run);
+      }
+      return;
+    }
+    if (drag.kind === "original" && drag.run) {
+      const run = drag.run;
+      const dx = drag.dx ?? 0;
+      const dy = drag.dy ?? 0;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+        this.originalMoves.delete(run.key);
+      } else {
+        this.originalMoves.set(run.key, {
+          key: run.key,
+          pageIndex: run.pageIndex,
+          text: run.text,
+          x: run.x,
+          y: run.y,
+          w: run.w,
+          h: run.h,
+          fontSize: run.fontSize,
+          fontFamily: run.fontFamily,
+          fontName: run.fontName,
+          bold: run.bold,
+          italic: run.italic,
+          color: run.color,
+          fontCss: run.fontCss,
+          dx,
+          dy,
+          background:
+            drag.background ?? this.sampleBackground(drag.page, run),
+        });
+      }
+      this.commitMutation("text");
+      this.selectOriginal(drag.page, run);
+      this.emit("change", { reason: "text" });
       return;
     }
     if (drag.kind === "draw" && drag.object) {
@@ -2561,6 +2972,16 @@ export class PdfCanvas {
             for (const page of this.pages) this.renderObjects(page);
           });
       }
+    } else if (tool === "select" && this.options.pdfiumWasmUrl) {
+      for (const page of this.pages) {
+        if (
+          totalRotation(page) === 0 &&
+          (this.visible.has(page.id) ||
+            page.id === this.pages[this.currentPageIndex]?.id)
+        ) {
+          void this.ensureTextRuns(page, false);
+        }
+      }
     }
     for (const page of this.pages) this.renderObjects(page);
     this.emit("change", { reason: "tool" });
@@ -2674,7 +3095,7 @@ export class PdfCanvas {
       if (this.originalEdit) this.finishOriginalEdit();
       if (this.editingState) this.finishEdit();
       const prepared =
-        this.textEdits.size > 0
+        this.textEdits.size > 0 || this.originalMoves.size > 0
           ? await this.prepareOriginalEdits()
           : { bytes: this.sourceBytes, pages: this.pages };
       const bytes = await buildPdf(
@@ -2708,6 +3129,8 @@ export class PdfCanvas {
     this.pdfiumLoading = null;
     this.textEdits.clear();
     this.textRuns.clear();
+    this.originalMoves.clear();
+    this.runFontFaces.clear();
     this.detachDragListeners();
     this.observer?.disconnect();
     this.root.removeEventListener("keydown", this.onKeyDown);
@@ -2731,6 +3154,19 @@ export class PdfCanvas {
     this.root.remove();
     this.listeners.clear();
   }
+}
+
+function looksLikeBrowserFont(bytes: Uint8Array): boolean {
+  if (bytes.length < 4) return false;
+  const tag = String.fromCharCode(bytes[0]!, bytes[1]!, bytes[2]!, bytes[3]!);
+  return (
+    (bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0) ||
+    tag === "true" ||
+    tag === "OTTO" ||
+    tag === "ttcf" ||
+    tag === "wOFF" ||
+    tag === "wOF2"
+  );
 }
 
 function pointsToPath(

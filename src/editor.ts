@@ -113,6 +113,14 @@ export function detectLocale(
   return "en";
 }
 
+type TextBar = HTMLDivElement & {
+  _bold?: HTMLButtonElement;
+  _italic?: HTMLButtonElement;
+  _size?: HTMLInputElement;
+  _color?: HTMLInputElement;
+  _swatch?: HTMLSpanElement;
+};
+
 const LABELS: Record<Locale, Record<string, string>> = {
   en: {
     file: "Document",
@@ -199,6 +207,8 @@ const LABELS: Record<Locale, Record<string, string>> = {
     tipZoom: "Ctrl/Cmd + wheel to zoom · double-click text to edit",
     pageSize: "Page size",
     originalText: "Original text",
+    styleUnavailable:
+      "This embedded font has no bold or italic variant. Move the text instead.",
     autosave: "Autosave",
     untitled: "document.pdf",
   },
@@ -287,6 +297,8 @@ const LABELS: Record<Locale, Record<string, string>> = {
     tipZoom: "Ctrl/Cmd + rotella per zoom · doppio clic sul testo",
     pageSize: "Dimensione pagina",
     originalText: "Testo originale",
+    styleUnavailable:
+      "Questo font incorporato non ha varianti grassetto o corsivo. Sposta il testo.",
     autosave: "Autosave",
     untitled: "documento.pdf",
   },
@@ -1103,7 +1115,7 @@ export class PdfCanvasEditor {
       return;
     }
     if (!this.textbar) {
-      const bar = el("div", "pce-textbar");
+      const bar = el("div", "pce-textbar") as TextBar;
       bar.setAttribute("role", "toolbar");
       bar.setAttribute("aria-label", this.t("originalText"));
       const bold = button(icon("bold"), this.t("bold"));
@@ -1137,19 +1149,28 @@ export class PdfCanvasEditor {
       bar.append(bold, italic, size, colorLabel, close);
       this.textbarHost.appendChild(bar);
       this.textbar = bar;
-      (bar as HTMLDivElement & { _bold?: HTMLButtonElement; _italic?: HTMLButtonElement; _size?: HTMLInputElement; _color?: HTMLInputElement; _swatch?: HTMLSpanElement })._bold = bold;
+      bar._bold = bold;
+      bar._italic = italic;
+      bar._size = size;
+      bar._color = color;
+      bar._swatch = swatch;
     }
-    const bar = this.textbar as HTMLDivElement & {
-      _bold?: HTMLButtonElement;
-      _italic?: HTMLButtonElement;
-      _size?: HTMLInputElement;
-      _color?: HTMLInputElement;
-      _swatch?: HTMLSpanElement;
-    };
+    const bar = this.textbar as TextBar;
     this.currentBold = edit.boldOverride ?? edit.bold;
     this.currentItalic = edit.italicOverride ?? edit.italic;
     this.currentSize = edit.fontSizeOverride ?? edit.fontSize;
     this.currentColor = edit.colorOverride ?? edit.color;
+    const canStyle = edit.canStyle !== false;
+    if (bar._bold) {
+      bar._bold.disabled = !canStyle;
+      bar._bold.setAttribute("aria-disabled", String(!canStyle));
+      bar._bold.title = canStyle ? this.t("bold") : this.t("styleUnavailable");
+    }
+    if (bar._italic) {
+      bar._italic.disabled = !canStyle;
+      bar._italic.setAttribute("aria-disabled", String(!canStyle));
+      bar._italic.title = canStyle ? this.t("italic") : this.t("styleUnavailable");
+    }
     bar._bold?.setAttribute("aria-pressed", String(this.currentBold));
     bar._italic?.setAttribute("aria-pressed", String(this.currentItalic));
     const size = bar.querySelector<HTMLInputElement>("input[type=number]");
