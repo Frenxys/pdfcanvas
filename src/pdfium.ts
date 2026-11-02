@@ -366,8 +366,11 @@ export class PdfiumTextEngine {
     for (const edit of edits) pageIndexes.add(edit.pageIndex);
     for (const move of moves) pageIndexes.add(move.pageIndex);
     const runsByKey = new Map<string, PdfiumTextRun>();
+    const runsByPage = new Map<number, PdfiumTextRun[]>();
     for (const pageIndex of pageIndexes) {
-      for (const run of this.readPage(pageIndex, 0)) {
+      const pageRuns = this.readPage(pageIndex, 0);
+      runsByPage.set(pageIndex, pageRuns);
+      for (const run of pageRuns) {
         runsByKey.set(run.key, run);
       }
     }
@@ -376,7 +379,9 @@ export class PdfiumTextEngine {
     for (const move of moves) {
       if (move.copy) continue;
       if (!move.dx && !move.dy) continue;
-      const run = runsByKey.get(move.key);
+      const run =
+        runsByKey.get(move.key) ??
+        this.findRun(runsByPage.get(move.pageIndex) ?? [], move);
       if (!run || !this.translateRun(run, move.dx, move.dy)) {
         failedMoves.push(move);
         continue;
@@ -394,7 +399,12 @@ export class PdfiumTextEngine {
     for (const move of moves) {
       if (!move.copy) continue;
       const pagePtr = this.page(move.pageIndex);
-      const run = runsByKey.get(move.sourceKey ?? move.key);
+      const run =
+        runsByKey.get(move.sourceKey ?? move.key) ??
+        this.findRun(runsByPage.get(move.pageIndex) ?? [], {
+          ...move,
+          text: undefined,
+        });
       if (
         !pagePtr ||
         !run ||
@@ -1107,6 +1117,31 @@ export class PdfiumTextEngine {
     if (!ptr) return null;
     this.pages.set(pageIndex, ptr);
     return ptr;
+  }
+
+  private findRun(
+    runs: PdfiumTextRun[],
+    target: {
+      text?: string;
+      x: number;
+      y: number;
+      fontSize: number;
+    },
+  ): PdfiumTextRun | null {
+    let best: PdfiumTextRun | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const run of runs) {
+      if (target.text !== undefined && run.text !== target.text) continue;
+      const distance =
+        Math.abs(run.x - target.x) +
+        Math.abs(run.y - target.y) +
+        Math.abs(run.fontSize - target.fontSize) * 2;
+      if (distance < bestDistance && distance < 4) {
+        best = run;
+        bestDistance = distance;
+      }
+    }
+    return best;
   }
 
   private matchRun(edit: PdfiumTextEdit): PdfiumTextRun | null {

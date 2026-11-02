@@ -1,4 +1,5 @@
 import { STYLES } from "./styles";
+import { withOs2Table } from "./font-patch";
 import { buildPdf } from "./export";
 import {
   PdfiumTextEngine,
@@ -958,7 +959,14 @@ export class PdfCanvas {
       let family = this.runFontFaces.get(fontPtr);
       if (family === undefined) {
         family = "";
-        const bytes = engine.fontBytes(run);
+        const raw = engine.fontBytes(run);
+        const bytes = raw
+          ? withOs2Table(raw, {
+              bold: run.bold,
+              italic: run.italic,
+              widthClass: /condensed|narrow/i.test(run.fontName) ? 3 : 5,
+            })
+          : null;
         if (bytes && canLoadFontFace(bytes)) {
           const name = `pc-run-${this.fontFaceGeneration}-${fontPtr}`;
           try {
@@ -980,7 +988,7 @@ export class PdfCanvas {
         this.runFontFaces.set(fontPtr, family);
       }
       if (family) run.fontCss = `"${family}"`;
-      if (!family && !hasSafePreviewFont(run)) {
+      if (!hasSafePreviewFont(run)) {
         run.editable = false;
         run.canStyle = false;
       }
