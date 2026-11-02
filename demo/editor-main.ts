@@ -10,8 +10,9 @@ const editor = new PdfCanvasEditor(container, {
   pdfiumWasmUrl,
   fontAssetsUrl: "/assets/fonts/",
   initialZoom: "fit-width",
-  locale: "it",
+  locale: "auto",
   brandHref: "https://pdf.eneawork.it",
+  sampleUrl: "/demo/sample.pdf",
   autosave: { key: "demo", debounce: 300 },
   onError: (error) => console.error("[editor demo]", error),
 });

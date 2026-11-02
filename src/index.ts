@@ -1,5 +1,5 @@
 export { PdfCanvas } from "./engine";
-export { PdfCanvasEditor, DEFAULT_TEMPLATES } from "./editor";
+export { PdfCanvasEditor, DEFAULT_TEMPLATES, detectLocale } from "./editor";
 export type {
   EditorTemplate,
   EditorTemplateObject,

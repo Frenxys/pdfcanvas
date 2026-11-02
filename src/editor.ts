@@ -40,13 +40,16 @@ export interface EditorTemplate {
 export interface PdfCanvasEditorOptions extends PdfCanvasOptions {
   brandName?: string;
   brandHref?: string;
-  locale?: "en" | "it";
+  brandTarget?: "_blank" | "_self";
+  locale?: "en" | "it" | "auto";
   autosave?: boolean | {
     key?: string;
     debounce?: number;
     restore?: boolean;
   };
   templates?: EditorTemplate[];
+  /** Optional sample PDF URL shown as a second button on the empty screen. */
+  sampleUrl?: string;
 }
 
 export const DEFAULT_TEMPLATES: EditorTemplate[] = [
@@ -96,12 +99,27 @@ export const DEFAULT_TEMPLATES: EditorTemplate[] = [
 
 type Locale = "en" | "it";
 
+export function detectLocale(
+  requested: PdfCanvasEditorOptions["locale"] = "auto",
+): Locale {
+  if (requested === "en" || requested === "it") return requested;
+  if (typeof navigator !== "undefined") {
+    const languages = [
+      navigator.language,
+      ...(navigator.languages ?? []),
+    ].map((value) => value.toLowerCase());
+    if (languages.some((value) => value.startsWith("it"))) return "it";
+  }
+  return "en";
+}
+
 const LABELS: Record<Locale, Record<string, string>> = {
   en: {
     file: "Document",
     saved: "Saved",
     saving: "Saving…",
     local: "Local",
+    localChanges: "Local changes",
     undo: "Undo",
     redo: "Redo",
     zoomOut: "Zoom out",
@@ -131,10 +149,16 @@ const LABELS: Record<Locale, Record<string, string>> = {
     page: "Page",
     of: "of",
     noDocument: "No document",
+    noPages: "No pages",
+    currentPage: "Current page",
+    rotateShort: "Rotate",
+    deleteShort: "Delete",
     openFirst: "Open a PDF to start.",
     emptyTitle: "Open a PDF to start",
-    emptyHint: "Drag a file here or choose one. Everything stays on your device.",
+    emptyHint: "Drag it here or choose a file. Everything stays on your device: no uploads, no account.",
     choosePdf: "Choose a PDF",
+    trySample: "Try a sample",
+    emptyNote: "Password-protected PDFs are not supported",
     lockAspect: "Keep ratio",
     noSelection: "Select an element on the page to edit its properties.",
     font: "Font",
@@ -180,6 +204,7 @@ const LABELS: Record<Locale, Record<string, string>> = {
     saved: "Salvato",
     saving: "Salvataggio…",
     local: "Locale",
+    localChanges: "Modifiche locali",
     undo: "Annulla",
     redo: "Ripeti",
     zoomOut: "Zoom indietro",
@@ -209,10 +234,16 @@ const LABELS: Record<Locale, Record<string, string>> = {
     page: "Pagina",
     of: "di",
     noDocument: "Nessun documento",
+    noPages: "Nessuna pagina",
+    currentPage: "Pagina corrente",
+    rotateShort: "Ruota",
+    deleteShort: "Elimina",
     openFirst: "Apri un PDF per iniziare.",
     emptyTitle: "Apri un PDF per iniziare",
-    emptyHint: "Trascina un file qui oppure sceglilo. Resta sul tuo dispositivo.",
+    emptyHint: "Trascinalo qui oppure scegli un file. Resta sul tuo dispositivo: nessun upload, nessun account.",
     choosePdf: "Scegli un PDF",
+    trySample: "Prova un esempio",
+    emptyNote: "I PDF protetti da password non sono supportati",
     lockAspect: "Mantieni proporzioni",
     noSelection: "Seleziona un elemento sulla pagina per modificarne le proprietà.",
     font: "Font",
@@ -286,6 +317,7 @@ const ICONS: Record<string, string> = {
   zoomIn: '<circle cx="11" cy="11" r="7"/><path d="M8 11h6M11 8v6M21 21l-4.5-4.5"/>',
   fit: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/>',
   open: '<path d="M4 20h16V8H4Z"/><path d="M8 8V4h8l4 4"/>',
+  fileup: '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/><path d="M12 11v6"/><path d="m9 14 3-3 3 3"/>',
   download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
   pages: '<rect x="4" y="3" width="12" height="16" rx="2"/><path d="M8 7h4M8 11h4M8 15h2"/><path d="M18 7h2v14H8v-2"/>',
   sliders: '<path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
@@ -429,16 +461,17 @@ export class PdfCanvasEditor {
     if (!container) throw new Error("A container element is required.");
     this.options = options;
     this.templates = options.templates ?? DEFAULT_TEMPLATES;
-    const locale = options.locale ?? "en";
+    const locale = detectLocale(options.locale);
     this.t = (key) => LABELS[locale][key] ?? LABELS.en[key] ?? key;
     PdfCanvasEditor.injectStyles();
+    this.injectUiFonts();
 
     this.root = el("div", "pce");
     this.root.style.setProperty("--pce-accent", options.accent ?? "#6b4eff");
     this.root.innerHTML = `
       <header class="pce-topbar">
         ${options.brandHref
-          ? `<a class="pce-brand" href="${escapeHtml(options.brandHref)}" target="_blank" rel="noreferrer">`
+          ? `<a class="pce-brand" href="${escapeHtml(options.brandHref)}" target="${options.brandTarget ?? "_blank"}" rel="noreferrer">`
           : `<span class="pce-brand">`}
           <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#6b4eff"/><path d="M20 12h16.5L47 22.5V52H20z" fill="#fff"/><path d="M36.5 12v10.5H47z" fill="#c9c0ff"/><path d="M26 33h15M26 42h9" stroke="#6b4eff" stroke-width="3.5" stroke-linecap="round"/></svg>
           <span>${escapeHtml(options.brandName ?? "PdfCanvas")}</span>
@@ -461,7 +494,7 @@ export class PdfCanvasEditor {
           <button type="button" class="pce-outline pce-mobile-actions" data-pages-toggle title="${this.t("pages")}">${icon("pages")}</button>
           <button type="button" class="pce-outline pce-mobile-actions" data-inspector-toggle title="${this.t("properties")}">${icon("sliders")}</button>
           <button type="button" class="pce-outline" data-open>${icon("open")}<span>${this.t("open")}</span></button>
-          <button type="button" class="pce-outline" data-templates>${icon("template")}<span>${this.t("templates")}</span></button>
+          <button type="button" class="pce-outline pce-template-btn" data-templates>${icon("template")}<span>${this.t("templates")}</span></button>
           <button type="button" class="pce-primary" data-export>${icon("download")}<span>${this.t("export")}</span></button>
         </div>
       </header>
@@ -487,10 +520,14 @@ export class PdfCanvasEditor {
           <div class="pce-stage" data-mount></div>
           <div class="pce-empty" data-empty>
             <div class="pce-empty-card">
-              <span class="pce-empty-icon">${icon("open", 30)}</span>
+              <span class="pce-empty-icon">${icon("fileup", 30)}</span>
               <h2>${this.t("emptyTitle")}</h2>
               <p>${this.t("emptyHint")}</p>
-              <button type="button" class="pce-primary" data-empty-open>${icon("open")}<span>${this.t("choosePdf")}</span></button>
+              <div class="pce-empty-actions">
+                <button type="button" class="pce-primary" data-empty-open>${icon("fileup")}<span>${this.t("choosePdf")}</span></button>
+                <button type="button" class="pce-outline" data-empty-sample${options.sampleUrl ? "" : " hidden"}>${icon("template")}<span>${this.t("trySample")}</span></button>
+              </div>
+              <p class="pce-empty-note">${escapeHtml(this.t("emptyNote"))}</p>
             </div>
           </div>
           <div class="pce-mobile-zoom" data-mobile-zoom>
@@ -545,6 +582,7 @@ export class PdfCanvasEditor {
 
     document.addEventListener("keydown", this.onSaveShortcut, true);
     this.buildTools();
+    this.syncTools();
     this.bindEvents();
     this.renderPages();
     this.renderInspector();
@@ -558,6 +596,20 @@ export class PdfCanvasEditor {
     const style = document.createElement("style");
     style.id = "pdfcanvas-editor-styles";
     style.textContent = EDITOR_STYLES;
+    document.head.appendChild(style);
+  }
+
+  private injectUiFonts() {
+    if (typeof document === "undefined" || !this.options.fontAssetsUrl) return;
+    if (document.getElementById("pdfcanvas-ui-fonts")) return;
+    const base = this.options.fontAssetsUrl.endsWith("/")
+      ? this.options.fontAssetsUrl
+      : `${this.options.fontAssetsUrl}/`;
+    const style = document.createElement("style");
+    style.id = "pdfcanvas-ui-fonts";
+    style.textContent = `
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 300 700; font-display: swap; src: url("${base}SpaceGrotesk-latin.woff2") format("woff2"); }
+@font-face { font-family: "Fraunces"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("${base}Fraunces-latin.woff2") format("woff2"); }`;
     document.head.appendChild(style);
   }
 
@@ -595,6 +647,9 @@ export class PdfCanvasEditor {
     this.query("[data-mobile-zoom-label]").addEventListener("click", () => this.core.fitWidth());
     this.query("[data-open]").addEventListener("click", () => this.fileInput.click());
     this.query("[data-empty-open]").addEventListener("click", () => this.fileInput.click());
+    this.query("[data-empty-sample]").addEventListener("click", () => {
+      if (this.options.sampleUrl) void this.openSample(this.options.sampleUrl);
+    });
     this.fileInput.addEventListener("change", () => {
       const file = this.fileInput.files?.[0];
       this.fileInput.value = "";
@@ -663,6 +718,16 @@ export class PdfCanvasEditor {
     return this.restorePromise;
   }
 
+  private async openSample(url: string): Promise<void> {
+    try {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await this.open(await response.blob(), url.split("/").pop() || "sample.pdf");
+    } catch (error) {
+      this.toast(error instanceof Error ? error.message : String(error), true);
+    }
+  }
+
   async open(source: PdfSource, name?: string): Promise<void> {
     this.userOpened = true;
     await this.restorePromise;
@@ -707,6 +772,9 @@ export class PdfCanvasEditor {
     this.query("[data-file]").textContent = state.pageCount
       ? state.fileName
       : this.t("noDocument");
+    this.query("[data-save]").textContent = state.pageCount
+      ? this.t("localChanges")
+      : this.t("local");
     const hasPages = state.pageCount > 0;
     this.query("[data-export]").toggleAttribute("disabled", !hasPages);
     this.query<HTMLElement>("[data-empty]").hidden = hasPages;
@@ -750,7 +818,8 @@ export class PdfCanvasEditor {
     this.pageCount.textContent = String(pages.length);
     this.pagesList.replaceChildren();
     if (pages.length === 0) {
-      const note = el("div", "pce-note", this.t("openFirst"));
+      const note = el("div", "pce-pages-empty");
+      note.innerHTML = `<strong>${escapeHtml(this.t("noPages"))}</strong><span>${escapeHtml(this.t("openFirst"))}</span>`;
       this.pagesList.appendChild(note);
       return;
     }
@@ -768,7 +837,10 @@ export class PdfCanvasEditor {
         image.draggable = false;
         thumb.appendChild(image);
       } else {
-        thumb.appendChild(el("span", "", String(page.index + 1)));
+        thumb.appendChild(el("span", "pce-thumb-fallback", String(page.index + 1)));
+      }
+      if (page.objectCount > 0) {
+        thumb.appendChild(el("span", "pce-thumb-badge", String(page.objectCount)));
       }
       const meta = el("span", "pce-page-meta");
       meta.appendChild(el("strong", "", `${this.t("page")} ${page.index + 1}`));
@@ -824,21 +896,32 @@ export class PdfCanvasEditor {
     this.inspector.replaceChildren();
     const form = el("div", "pce-form");
     if (!state.selection) {
-      const info = el("div", "pce-note");
-      info.innerHTML = `<strong>${escapeHtml(
-        state.pageCount ? `${this.t("page")} ${state.currentPage + 1} ${this.t("of")} ${state.pageCount}` : this.t("noDocument"),
-      )}</strong><br>${escapeHtml(this.t("noSelection"))}`;
-      form.appendChild(info);
-      const buttons = el("div", "pce-btnrow");
-      const rotate = button(`${icon("rotate")}<span>${this.t("rotatePage")}</span>`, this.t("rotatePage"), "pce-smallbtn");
+      const current = state.pages[state.currentPage];
+      const summary = el("div", "pce-summary");
+      summary.innerHTML = `<p class="pce-summary-label">${escapeHtml(this.t("currentPage"))}</p>
+        <p class="pce-summary-value">${state.pageCount ? state.currentPage + 1 : 0}<span> / ${state.pageCount}</span></p>
+        <p class="pce-summary-meta">${current ? `${Math.round(current.width)} × ${Math.round(current.height)} pt` : escapeHtml(this.t("noDocument"))}</p>`;
+      const actions = el("div", "pce-summary-actions");
+      const rotate = button(`${icon("rotate")}<span>${this.t("rotateShort")}</span>`, this.t("rotatePage"), "pce-smallbtn");
+      rotate.disabled = state.pageCount === 0;
       rotate.addEventListener("click", () => this.rotateCurrentPage());
-      const del = button(`${icon("trash")}<span>${this.t("deletePage")}</span>`, this.t("deletePage"), "pce-smallbtn danger");
+      const del = button(`${icon("trash")}<span>${this.t("deleteShort")}</span>`, this.t("deletePage"), "pce-smallbtn danger");
+      del.disabled = state.pageCount === 0;
       del.addEventListener("click", () => this.core.deletePage(this.core.getCurrentPage()));
-      buttons.append(rotate, del);
-      form.appendChild(buttons);
-      const tips = el("div", "pce-note");
-      tips.innerHTML = `<strong>${escapeHtml(this.t("tips"))}</strong><br>${escapeHtml(this.t("tipText"))}<br>${escapeHtml(this.t("tipUndo"))}<br>${escapeHtml(this.t("tipZoom"))}`;
+      actions.append(rotate, del);
+      summary.appendChild(actions);
+      form.appendChild(summary);
+
+      const tips = el("div", "pce-shortcuts");
+      tips.innerHTML = `<p class="pce-shortcuts-title">${escapeHtml(this.t("tips"))}</p>
+        <ul>
+          <li><kbd>T</kbd> ${escapeHtml(this.t("text"))} · <kbd>E</kbd> ${escapeHtml(this.t("textEdit"))} · <kbd>V</kbd> ${escapeHtml(this.t("select"))}</li>
+          <li><kbd>Ctrl</kbd> + <kbd>Z</kbd> ${escapeHtml(this.t("undo"))}</li>
+          <li><kbd>Ctrl</kbd> + <kbd>S</kbd> ${escapeHtml(this.t("export"))}</li>
+          <li>${escapeHtml(this.t("tipZoom"))}</li>
+        </ul>`;
       form.appendChild(tips);
+      form.appendChild(el("p", "pce-hint", this.t("noSelection")));
       this.inspector.appendChild(form);
       this.query("[data-inspector-kicker]").textContent = this.t("file");
       return;

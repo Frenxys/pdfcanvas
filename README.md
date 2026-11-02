@@ -8,7 +8,7 @@
 - Website / playground: https://pdf.eneawork.it
 - Source: https://github.com/Frenxys/pdfcanvas
 
-> Status: `0.7.x`. The editing model and public API are usable but may still change.
+> Status: `0.8.x`. The editing model and public API are usable but may still change.
 
 ## Features
 
@@ -78,9 +78,11 @@ const editor = new PdfCanvasEditor(document.querySelector("#app")!, {
   workerSrc: "/pdfjs/pdf.worker.min.mjs",
   pdfiumWasmUrl: "/pdfium/pdfium.wasm",
   fontAssetsUrl: "/fonts/",
-  locale: "en",                         // "en" | "it"
+  locale: "auto",                       // "auto" | "en" | "it"
   brandName: "PdfCanvas",
   brandHref: "https://pdf.eneawork.it",
+  brandTarget: "_blank",                // "_self" to stay in the same tab
+  sampleUrl: "/sample.pdf",             // optional “Try a sample” button
   autosave: { key: "my-project", debounce: 600 },
   templates: [],                        // omit for the bundled templates
 });
@@ -90,6 +92,8 @@ await editor.open(file);
 ```
 
 `autosave` stores the original PDF bytes plus the scene in IndexedDB. Nothing is uploaded. Use a distinct `key` per document. Call `destroy()` to release listeners and DOM.
+
+Language defaults to `auto`: English unless the browser prefers Italian (`en` and `it` are supported). Pass `locale: "en"` or `"it"` to force one. `detectLocale()` is exported if you need the resolved value.
 
 ### Editor API
 
@@ -115,7 +119,7 @@ interface EditorTemplate {
 
 Template objects are positioned in PDF points from the top-left of the page. Text objects accept `text`, `fontSize`, `fontFamily`, `bold`, `italic`, `color`; shape objects accept `shape`, `width`, `height`, `fill`, `stroke`, `strokeWidth`.
 
-The editor CSS is injected on first mount, so there is no stylesheet import to forget.
+The editor CSS is injected on first mount, so there is no stylesheet import to forget. When `fontAssetsUrl` points at the packaged `assets/fonts/` folder, the editor also loads the bundled Space Grotesk and Fraunces WOFF2 files for the same typography as the hosted editor; otherwise it falls back to system fonts.
 
 ### Self-host the pdf.js worker
 
@@ -127,7 +131,7 @@ cmaps/                          -> public/pdfjs/cmaps/
 standard_fonts/                 -> public/pdfjs/standard_fonts/
 wasm/                           -> public/pdfjs/wasm/
 @embedpdf/pdfium/dist/pdfium.wasm -> public/pdfium/pdfium.wasm
-assets/fonts/                    -> public/fonts/
+assets/fonts/                    -> public/fonts/   (PDF fallback + editor UI fonts)
 ```
 
 ```ts

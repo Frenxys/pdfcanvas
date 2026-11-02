@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+- Editor visual refresh aligned with the pdf.eneawork.it editor: icon-first toolbar, wider page rail and inspector, larger thumbnails, serif headings and page summary cards.
+- `sampleUrl` option adds a “Try a sample” button on the empty screen.
+- `brandTarget` option controls whether the brand link opens in the same tab.
+- Object-count badges on page thumbnails.
+- Empty page rail and empty screen now use the same copy and styling as the site.
+- Active tool is highlighted immediately on mount.
+- Language defaults to `auto`: English unless the browser prefers Italian; `en`/`it` can still be forced. `detectLocale()` is exported.
+
 ## 0.7.0
 
 - Resize text boxes from the side handles; text now wraps to the box width in the preview and in the exported PDF.
