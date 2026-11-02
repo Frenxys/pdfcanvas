@@ -494,7 +494,7 @@ export class PdfCanvasEditor {
           <button type="button" class="pce-outline pce-mobile-actions" data-pages-toggle title="${this.t("pages")}">${icon("pages")}</button>
           <button type="button" class="pce-outline pce-mobile-actions" data-inspector-toggle title="${this.t("properties")}">${icon("sliders")}</button>
           <button type="button" class="pce-outline" data-open>${icon("open")}<span>${this.t("open")}</span></button>
-          <button type="button" class="pce-outline pce-template-btn" data-templates>${icon("template")}<span>${this.t("templates")}</span></button>
+          <button type="button" class="pce-outline pce-template-btn" data-templates aria-label="${this.t("templates")}" title="${this.t("templates")}">${icon("template")}<span>${this.t("templates")}</span></button>
           <button type="button" class="pce-primary" data-export>${icon("download")}<span>${this.t("export")}</span></button>
         </div>
       </header>
