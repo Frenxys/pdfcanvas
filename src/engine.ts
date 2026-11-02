@@ -876,6 +876,10 @@ export class PdfCanvas {
 
   private async ensureTextRuns(page: PageState, warn = true): Promise<void> {
     if (this.textRuns.has(page.id) || this.textRunsLoading.has(page.id)) return;
+    if (!this.options.pdfiumWasmUrl) {
+      this.textRuns.set(page.id, []);
+      return;
+    }
     if (page.sourceIndex === null) {
       this.textRuns.set(page.id, []);
       return;
