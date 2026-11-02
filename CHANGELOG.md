@@ -17,6 +17,7 @@
 - Custom embedded fonts stay move/delete/duplicate-only. Editing is limited to standard or metric-compatible families, so an edit cannot silently swap the typeface.
 - Text lines are grouped by baseline and spacing instead of font or weight, so a sentence with bold, italic and regular spans is selected and dragged as one line. Mixed-style lines are move/delete only and use a bitmap preview.
 - Dragging original text now always uses a pixel capture of the rendered line, so the preview keeps its exact position, size and font instead of being rebuilt with CSS line-height.
+- Selection boxes, covers and drag previews use the tight bounds of the PDF text objects, not the loose font box. A tall decorative title no longer covers or drags the paragraph underneath.
 - Snapping is tighter (5 px at 100%) and can be disabled by holding Alt while dragging. Select-tool pages use `touch-action: none`, so a drag does not turn into a page scroll.
 - Arrow keys nudge selected original text; Shift moves it by 10 points.
 

@@ -346,6 +346,32 @@ export class PdfiumTextEngine {
       });
     }
     const runs = groupChars(raw);
+    for (const run of runs) {
+      let left = Number.POSITIVE_INFINITY;
+      let bottom = Number.POSITIVE_INFINITY;
+      let right = Number.NEGATIVE_INFINITY;
+      let top = Number.NEGATIVE_INFINITY;
+      for (const member of run.members) {
+        const bounds = this.objectBounds(member.objPtr);
+        if (!bounds) continue;
+        if (bounds.right <= bounds.left || bounds.top <= bounds.bottom) continue;
+        left = Math.min(left, bounds.left);
+        bottom = Math.min(bottom, bounds.bottom);
+        right = Math.max(right, bounds.right);
+        top = Math.max(top, bounds.top);
+      }
+      if (
+        Number.isFinite(left) &&
+        Number.isFinite(bottom) &&
+        Number.isFinite(right) &&
+        Number.isFinite(top)
+      ) {
+        run.x = left - box.left;
+        run.y = box.top - top;
+        run.w = right - left;
+        run.h = top - bottom;
+      }
+    }
     this.runCache.set(pageIndex, runs);
     return runs;
   }
