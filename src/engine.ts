@@ -1212,7 +1212,7 @@ export class PdfCanvas {
         className,
       );
     }
-    if (source.fontCss) {
+    if (source.fontCss && !source.mixed) {
       return this.createOriginalTextElement(
         source,
         undefined,
@@ -2227,6 +2227,14 @@ export class PdfCanvas {
       const base = run
         ? { ...run, text: edit?.newText ?? run.text }
         : source;
+      if (run?.mixed) {
+        this.fail(
+          new Error(
+            "Questa riga contiene più stili: può essere spostata o eliminata, ma non duplicata come testo modificabile.",
+          ),
+        );
+        return;
+      }
       if (base) {
         const dx = (source?.dx ?? 0) + 12;
         const dy = (source?.dy ?? 0) + 12;
@@ -2247,6 +2255,7 @@ export class PdfCanvas {
           italic: base.italic,
           color: base.color,
           fontCss: base.fontCss,
+          mixed: base.mixed,
           dx,
           dy,
           background:
@@ -3916,7 +3925,7 @@ export class PdfCanvas {
 }
 
 function hasSafePreviewFont(run: PdfiumTextRun): boolean {
-  return /^(helvetica|arial|times|courier|liberation|work\s*sans|worksans)/i.test(
+  return /^(helvetica($|[-_ ])|arial|liberation|work\s*sans|worksans|times($|[-_ ])|timesnewroman|courier($|[-_ ])|couriernew)/i.test(
     run.fontName,
   );
 }

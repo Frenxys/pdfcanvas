@@ -119,6 +119,7 @@ type TextBar = HTMLDivElement & {
   _size?: HTMLInputElement;
   _color?: HTMLInputElement;
   _swatch?: HTMLSpanElement;
+  _duplicate?: HTMLButtonElement;
 };
 
 const LABELS: Record<Locale, Record<string, string>> = {
@@ -212,6 +213,8 @@ const LABELS: Record<Locale, Record<string, string>> = {
       "This embedded font has no bold or italic variant. Move the text instead.",
     confirmDeleteOriginal:
       "Delete this original text? You can undo with Ctrl/Cmd+Z.",
+    mixedUnavailable:
+      "This line mixes styles and can only be moved or deleted.",
     multipleSelected: "Multiple elements selected",
     autosave: "Autosave",
     untitled: "document.pdf",
@@ -306,6 +309,8 @@ const LABELS: Record<Locale, Record<string, string>> = {
       "Questo font incorporato non ha varianti grassetto o corsivo. Sposta il testo.",
     confirmDeleteOriginal:
       "Eliminare questo testo originale? Puoi annullare con Ctrl/Cmd+Z.",
+    mixedUnavailable:
+      "Questa riga contiene più stili: può essere solo spostata o eliminata.",
     multipleSelected: "Più elementi selezionati",
     autosave: "Autosave",
     untitled: "documento.pdf",
@@ -1212,6 +1217,7 @@ export class PdfCanvasEditor {
       bar._size = size;
       bar._color = color;
       bar._swatch = swatch;
+      bar._duplicate = duplicate;
     }
     const bar = this.textbar as TextBar;
     this.currentBold = edit.boldOverride ?? edit.bold;
@@ -1220,19 +1226,29 @@ export class PdfCanvasEditor {
     this.currentColor = edit.colorOverride ?? edit.color;
     const canEdit = edit.editable !== false;
     const canStyle = canEdit && edit.canStyle !== false;
+    const styleTitle = edit.mixed
+      ? this.t("mixedUnavailable")
+      : this.t("styleUnavailable");
     if (bar._bold) {
       bar._bold.disabled = !canStyle;
       bar._bold.setAttribute("aria-disabled", String(!canStyle));
-      bar._bold.title = canStyle ? this.t("bold") : this.t("styleUnavailable");
+      bar._bold.title = canStyle ? this.t("bold") : styleTitle;
     }
     if (bar._italic) {
       bar._italic.disabled = !canStyle;
       bar._italic.setAttribute("aria-disabled", String(!canStyle));
-      bar._italic.title = canStyle ? this.t("italic") : this.t("styleUnavailable");
+      bar._italic.title = canStyle ? this.t("italic") : styleTitle;
     }
     if (bar._size) bar._size.disabled = !canEdit;
     if (bar._color) bar._color.disabled = !canEdit;
     if (bar._swatch) bar._swatch.style.opacity = canEdit ? "1" : "0.45";
+    if (bar._duplicate) {
+      const canDuplicate = edit.mixed !== true;
+      bar._duplicate.disabled = !canDuplicate;
+      bar._duplicate.title = canDuplicate
+        ? this.t("duplicate")
+        : this.t("mixedUnavailable");
+    }
     bar._bold?.setAttribute("aria-pressed", String(this.currentBold));
     bar._italic?.setAttribute("aria-pressed", String(this.currentItalic));
     const size = bar.querySelector<HTMLInputElement>("input[type=number]");

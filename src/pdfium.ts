@@ -38,6 +38,8 @@ export interface PdfiumTextRun {
   bold: boolean;
   italic: boolean;
   color: string;
+  /** True when the line mixes fonts, weights or colours. */
+  mixed?: boolean;
   /** True when the original font is embedded or safely replaceable. */
   editable: boolean;
   /** True when bold/italic can be reproduced without changing typeface. */
@@ -64,6 +66,7 @@ export interface PdfiumTextMove {
   italic: boolean;
   color: string;
   fontCss?: string;
+  mixed?: boolean;
   dx: number;
   dy: number;
   background: string;
@@ -1434,19 +1437,9 @@ function groupChars(chars: RawChar[]): PdfiumTextRun[] {
     let current = groups[groups.length - 1];
     const startsNew =
       !current ||
-      Math.abs(current.fontSize - char.fontSize) > 0.6 ||
-      current.fontFamily !== char.fontFamily ||
-      current.fontName !== char.fontName ||
-      current.bold !== char.bold ||
-      current.italic !== char.italic ||
-      current.color !== char.color ||
-      current.editable !== char.editable ||
-      current.canStyle !== char.canStyle ||
-      current.members[0]?.fontPtr !== char.fontPtr ||
       Math.abs(current.y + current.h - (char.y + char.h)) >
-        Math.max(2, char.fontSize * 0.35) ||
-      char.x - (current.x + current.w) < -char.fontSize * 0.8 ||
-      char.x - (current.x + current.w) > char.fontSize * 0.9;
+        Math.max(2, char.fontSize * 0.45) ||
+      char.x - (current.x + current.w) > char.fontSize * 2.5;
 
     if (startsNew || !current) {
       const group: PdfiumTextRun = {
@@ -1467,6 +1460,7 @@ function groupChars(chars: RawChar[]): PdfiumTextRun[] {
         color: char.color,
         editable: char.editable,
         canStyle: char.canStyle,
+        mixed: false,
         members: [],
       };
       groups.push(group);
@@ -1485,11 +1479,30 @@ function groupChars(chars: RawChar[]): PdfiumTextRun[] {
     current.w = Math.max(current.w, char.x + char.w - current.x);
     current.h = Math.max(current.h, char.y + char.h - current.y);
     current.y = Math.min(current.y, char.y);
+    current.fontSize = Math.max(current.fontSize, char.fontSize);
     if (char.objPtr && !current.members.some((member) => member.objPtr === char.objPtr)) {
       current.members.push(char);
     }
   }
-  return groups.filter((group) => group.members.length > 0);
+  const result = groups.filter((group) => group.members.length > 0);
+  for (const group of result) {
+    const first = group.members[0];
+    if (!first) continue;
+    group.mixed = group.members.some(
+      (member) =>
+        member.fontPtr !== first.fontPtr ||
+        member.fontName !== first.fontName ||
+        member.bold !== first.bold ||
+        member.italic !== first.italic ||
+        member.color !== first.color ||
+        Math.abs(member.fontSize - first.fontSize) > 0.5,
+    );
+    if (group.mixed) {
+      group.editable = false;
+      group.canStyle = false;
+    }
+  }
+  return result;
 }
 
 function isCollapsed(

@@ -15,6 +15,7 @@
 - When a browser cannot load an embedded font, its drag preview is a bitmap captured from the page instead of re-rendered text. The export still moves the original PDF object with its real font, and formatting controls stay disabled for that run.
 - Subset fonts that only lack a browser-compatible OS/2 or cmap table are rebuilt in memory for the preview, so fonts such as Zapfino, Cameron Sans, Bodoni and Avenir Next Condensed keep their real glyphs while dragging.
 - Custom embedded fonts stay move/delete/duplicate-only. Editing is limited to standard or metric-compatible families, so an edit cannot silently swap the typeface.
+- Text lines are grouped by baseline and spacing instead of font or weight, so a sentence with bold, italic and regular spans is selected and dragged as one line. Mixed-style lines are move/delete only and use a bitmap preview.
 - Arrow keys nudge selected original text; Shift moves it by 10 points.
 
 ## 0.8.0
