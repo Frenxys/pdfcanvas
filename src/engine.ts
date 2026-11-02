@@ -162,6 +162,7 @@ export class PdfCanvas {
   private selectedOriginalKey: string | null = null;
   private selectedOriginalPageId: string | null = null;
   private runFontFaces = new Map<number, string>();
+  private originalGhostCache = new Map<string, string | null>();
   private fontFaceGeneration = 0;
   private lockedRunsReported = new Set<string>();
   private originalEdit: {
@@ -425,6 +426,7 @@ export class PdfCanvas {
     this.finishPan();
     this.setSpacePan(false);
     this.runFontFaces.clear();
+    this.originalGhostCache.clear();
     this.fontFaceGeneration += 1;
     this.lockedRunsReported.clear();
     this.activeOriginalKey = null;
@@ -602,10 +604,13 @@ export class PdfCanvas {
       this.renderTasks.set(page.id, task);
       await task.promise;
       this.renderTasks.delete(page.id);
+      this.originalGhostCache.clear();
       if (this.tool === "text-edit") {
         void this.ensureTextRuns(page);
+        this.renderOriginalText(page);
       } else if (this.tool === "select" && totalRotation(page) === 0) {
         void this.ensureTextRuns(page, false);
+        this.renderOriginalText(page);
       } else {
         this.renderOriginalText(page);
       }
@@ -954,7 +959,7 @@ export class PdfCanvas {
       if (family === undefined) {
         family = "";
         const bytes = engine.fontBytes(run);
-        if (bytes && looksLikeBrowserFont(bytes)) {
+        if (bytes && canLoadFontFace(bytes)) {
           const name = `pc-run-${this.fontFaceGeneration}-${fontPtr}`;
           try {
             const face = new FontFace(
@@ -975,6 +980,10 @@ export class PdfCanvas {
         this.runFontFaces.set(fontPtr, family);
       }
       if (family) run.fontCss = `"${family}"`;
+      if (!family && !hasSafePreviewFont(run)) {
+        run.editable = false;
+        run.canStyle = false;
+      }
     }
   }
 
@@ -1023,12 +1032,12 @@ export class PdfCanvas {
     for (const move of moves) {
       if (this.textEdits.has(move.key)) continue;
       overlay.appendChild(
-        this.createOriginalTextElement(
+        this.createOriginalGhost(
+          page,
           move,
-          undefined,
+          this.textEdits.get(move.key),
           move.x + move.dx,
           move.y + move.dy,
-          "transparent",
           "pc-orig-ghost",
         ),
       );
@@ -1175,6 +1184,113 @@ export class PdfCanvas {
       move ? "transparent" : edit.background,
       "pc-orig-preview",
     );
+  }
+
+  private createOriginalGhost(
+    page: PageState,
+    source: PdfiumTextRun | PdfiumTextMove,
+    edit: PdfiumTextEdit | undefined,
+    x: number,
+    y: number,
+    className: string,
+  ): HTMLElement {
+    if (edit && !edit.deleted) {
+      return this.createOriginalTextElement(
+        source,
+        edit,
+        x,
+        y,
+        "transparent",
+        className,
+      );
+    }
+    if (source.fontCss) {
+      return this.createOriginalTextElement(
+        source,
+        undefined,
+        x,
+        y,
+        "transparent",
+        className,
+      );
+    }
+    const image = this.captureOriginalGhost(page, source);
+    if (!image) {
+      return this.createOriginalTextElement(
+        source,
+        undefined,
+        x,
+        y,
+        "transparent",
+        className,
+      );
+    }
+    const ghost = document.createElement("div");
+    ghost.className = className;
+    ghost.style.left = `${x * this.zoom}px`;
+    ghost.style.top = `${y * this.zoom}px`;
+    ghost.style.width = `${Math.max(1, source.w * this.zoom)}px`;
+    ghost.style.height = `${Math.max(1, source.h * this.zoom)}px`;
+    ghost.style.backgroundImage = `url("${image}")`;
+    ghost.style.backgroundSize = "100% 100%";
+    ghost.style.backgroundRepeat = "no-repeat";
+    return ghost;
+  }
+
+  private captureOriginalGhost(
+    page: PageState,
+    source: Pick<PdfiumTextRun, "x" | "y" | "w" | "h">,
+  ): string | null {
+    const key = `${page.id}:${source.x.toFixed(2)}:${source.y.toFixed(2)}:${source.w.toFixed(2)}:${source.h.toFixed(2)}:${this.zoom}`;
+    const cached = this.originalGhostCache.get(key);
+    if (cached !== undefined) return cached;
+    const canvas = this.pageEls.get(page.id)?.querySelector("canvas");
+    if (!canvas || canvas.width <= 1 || canvas.height <= 1) {
+      this.originalGhostCache.set(key, null);
+      return null;
+    }
+    const [pageWidth, pageHeight] = displaySize(page);
+    const scaleX = canvas.width / Math.max(1, pageWidth);
+    const scaleY = canvas.height / Math.max(1, pageHeight);
+    const left = clamp(Math.round(source.x * scaleX), 0, canvas.width - 1);
+    const top = clamp(Math.round(source.y * scaleY), 0, canvas.height - 1);
+    const width = Math.max(
+      1,
+      Math.min(canvas.width - left, Math.round(source.w * scaleX)),
+    );
+    const height = Math.max(
+      1,
+      Math.min(canvas.height - top, Math.round(source.h * scaleY)),
+    );
+    const image = document.createElement("canvas");
+    image.width = width;
+    image.height = height;
+    const context = image.getContext("2d");
+    if (!context) {
+      this.originalGhostCache.set(key, null);
+      return null;
+    }
+    context.drawImage(canvas, left, top, width, height, 0, 0, width, height);
+    const background = colourToRgb(this.sampleBackground(page, source));
+    try {
+      const data = context.getImageData(0, 0, width, height);
+      const pixels = data.data;
+      for (let index = 0; index < pixels.length; index += 4) {
+        if (
+          Math.abs((pixels[index] ?? 0) - background.r) <= 14 &&
+          Math.abs((pixels[index + 1] ?? 0) - background.g) <= 14 &&
+          Math.abs((pixels[index + 2] ?? 0) - background.b) <= 14
+        ) {
+          pixels[index + 3] = 0;
+        }
+      }
+      context.putImageData(data, 0, 0);
+    } catch {
+      // Tainted canvas: keep the opaque capture.
+    }
+    const url = image.toDataURL("image/png");
+    this.originalGhostCache.set(key, url);
+    return url;
   }
 
   private createOriginalTextElement(
@@ -1390,6 +1506,14 @@ export class PdfCanvas {
       .get(page.id)
       ?.find((item) => item.key === this.activeOriginalKey);
     if (!run) return;
+    if (!run.editable) {
+      this.fail(
+        new Error(
+          "Questo font non è disponibile nell'editor: il testo può essere spostato, eliminato o duplicato, ma non riformattato.",
+        ),
+      );
+      return;
+    }
     if (
       (patch.boldOverride !== undefined || patch.italicOverride !== undefined) &&
       !run.canStyle
@@ -2774,12 +2898,12 @@ export class PdfCanvas {
       ?.querySelector<HTMLElement>(".pc-overlay");
     if (!overlay) return;
     const cover = this.createOriginalCover({ ...run, background });
-    const ghost = this.createOriginalTextElement(
+    const ghost = this.createOriginalGhost(
+      page,
       run,
       this.textEdits.get(run.key),
       run.x + dx,
       run.y + dy,
-      "transparent",
       "pc-orig-ghost",
     );
     overlay.append(cover, ghost);
@@ -2815,12 +2939,12 @@ export class PdfCanvas {
       .get(page.id)
       ?.querySelector<HTMLElement>(".pc-overlay");
     if (!overlay) return;
-    const ghost = this.createOriginalTextElement(
+    const ghost = this.createOriginalGhost(
+      page,
       move,
       undefined,
       move.x + move.dx,
       move.y + move.dy,
-      "transparent",
       "pc-orig-ghost",
     );
     overlay.appendChild(ghost);
@@ -3752,6 +3876,7 @@ export class PdfCanvas {
     this.textRuns.clear();
     this.originalMoves.clear();
     this.runFontFaces.clear();
+    this.originalGhostCache.clear();
     this.detachDragListeners();
     this.finishPan();
     this.setSpacePan(false);
@@ -3782,6 +3907,22 @@ export class PdfCanvas {
   }
 }
 
+function hasSafePreviewFont(run: PdfiumTextRun): boolean {
+  return /^(helvetica|arial|times|courier|liberation|work\s*sans|worksans)/i.test(
+    run.fontName,
+  );
+}
+
+function colourToRgb(value: string): { r: number; g: number; b: number } {
+  const match = value.match(/^#?([0-9a-f]{6})$/i);
+  if (!match?.[1]) return { r: 255, g: 255, b: 255 };
+  return {
+    r: parseInt(match[1].slice(0, 2), 16),
+    g: parseInt(match[1].slice(2, 4), 16),
+    b: parseInt(match[1].slice(4, 6), 16),
+  };
+}
+
 function looksLikeBrowserFont(bytes: Uint8Array): boolean {
   if (bytes.length < 4) return false;
   const tag = String.fromCharCode(bytes[0]!, bytes[1]!, bytes[2]!, bytes[3]!);
@@ -3793,6 +3934,27 @@ function looksLikeBrowserFont(bytes: Uint8Array): boolean {
     tag === "wOFF" ||
     tag === "wOF2"
   );
+}
+
+function canLoadFontFace(bytes: Uint8Array): boolean {
+  if (!looksLikeBrowserFont(bytes)) return false;
+  const tag = String.fromCharCode(bytes[0]!, bytes[1]!, bytes[2]!, bytes[3]!);
+  if (tag === "ttcf" || tag === "wOFF" || tag === "wOF2") return true;
+  if (bytes.length < 12) return false;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint16(4);
+  for (let index = 0; index < count; index += 1) {
+    const offset = 12 + index * 16;
+    if (offset + 4 > bytes.length) break;
+    const table = String.fromCharCode(
+      bytes[offset]!,
+      bytes[offset + 1]!,
+      bytes[offset + 2]!,
+      bytes[offset + 3]!,
+    );
+    if (table === "OS/2") return true;
+  }
+  return false;
 }
 
 function pointsToPath(

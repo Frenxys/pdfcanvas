@@ -61,7 +61,7 @@ editor.addShape("rect", { x: 80, y: 180, width: 200, height: 90 });
 await editor.download();            // downloads "file-pdfcanvas.pdf"
 ```
 
-Existing text can be edited with the `text-edit` tool, or by double-clicking a text line with the Select tool. Dragging a text line with the Select tool moves the original PDF object without changing its font. Use `updateOriginalText()` to change the selected line's bold/italic/size/colour when the font supports it:
+Existing text can be edited with the `text-edit` tool, or by double-clicking a text line with the Select tool. Dragging a text line with the Select tool moves the original PDF object without changing its font. If the embedded font cannot be loaded by the browser, the line is move/delete/duplicate only and the drag preview uses a bitmap of the original glyphs; export keeps the real PDF font. Use `updateOriginalText()` to change the selected line's bold/italic/size/colour when the font supports it:
 
 ```ts
 editor.on("originaledit", ({ edit }) => {

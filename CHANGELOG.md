@@ -12,6 +12,7 @@
 - Snap dragged objects to page edges, page centre and other objects, with alignment guides.
 - Multi-select with Shift + click, Ctrl/Cmd + A or a marquee; drag the whole selection together.
 - Delete and duplicate original text. Duplicates are inserted as real PDF text with the original font, and both actions support undo.
+- When a browser cannot load an embedded font, its drag preview is a bitmap captured from the page instead of re-rendered text. The export still moves the original PDF object with its real font, and formatting controls stay disabled for that run.
 - Arrow keys nudge selected original text; Shift moves it by 10 points.
 
 ## 0.8.0

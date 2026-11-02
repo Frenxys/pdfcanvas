@@ -1218,7 +1218,8 @@ export class PdfCanvasEditor {
     this.currentItalic = edit.italicOverride ?? edit.italic;
     this.currentSize = edit.fontSizeOverride ?? edit.fontSize;
     this.currentColor = edit.colorOverride ?? edit.color;
-    const canStyle = edit.canStyle !== false;
+    const canEdit = edit.editable !== false;
+    const canStyle = canEdit && edit.canStyle !== false;
     if (bar._bold) {
       bar._bold.disabled = !canStyle;
       bar._bold.setAttribute("aria-disabled", String(!canStyle));
@@ -1229,6 +1230,9 @@ export class PdfCanvasEditor {
       bar._italic.setAttribute("aria-disabled", String(!canStyle));
       bar._italic.title = canStyle ? this.t("italic") : this.t("styleUnavailable");
     }
+    if (bar._size) bar._size.disabled = !canEdit;
+    if (bar._color) bar._color.disabled = !canEdit;
+    if (bar._swatch) bar._swatch.style.opacity = canEdit ? "1" : "0.45";
     bar._bold?.setAttribute("aria-pressed", String(this.currentBold));
     bar._italic?.setAttribute("aria-pressed", String(this.currentItalic));
     const size = bar.querySelector<HTMLInputElement>("input[type=number]");
