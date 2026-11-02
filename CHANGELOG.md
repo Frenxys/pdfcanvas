@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- Resize text boxes from the side handles; text now wraps to the box width in the preview and in the exported PDF.
+- Empty-document screen with a direct file picker.
+- Global Ctrl/Cmd+S export, including while an inspector input or a text edit is focused.
+- Drag pages in the page rail to reorder them.
+- Duplicate the current page, with independent object ids and original text edits.
+- Keep image proportions toggle in the inspector.
+- Templates scale to the current page size, including landscape pages and non-A4 documents.
+- Close signature/template dialogs with Escape or a backdrop click; signature insert stays disabled until you draw.
+- Rotating a page now refits it in the viewport.
+- The brand is no longer a dead link when `brandHref` is omitted.
+
 ## 0.6.0
 
 - New `pdfcanvas/editor` entry point with the complete `PdfCanvasEditor` UI.

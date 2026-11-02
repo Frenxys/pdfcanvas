@@ -21,6 +21,7 @@ import {
   isPdfFile,
   loadImage,
   measureText,
+  wrapTextLines,
   normaliseImage,
   normaliseRotation,
   outputFileName,
@@ -617,6 +618,10 @@ export class PdfCanvas {
       wrapper.style.fontStyle = object.italic ? "italic" : "normal";
       wrapper.style.color = object.color;
       wrapper.style.textAlign = object.align;
+      if (object.wrap) {
+        wrapper.style.whiteSpace = "pre-wrap";
+        wrapper.style.overflowWrap = "break-word";
+      }
       wrapper.textContent = object.text;
       wrapper.dataset.placeholder = "Scrivi qui";
       wrapper.addEventListener("dblclick", () => this.beginEdit(page, object));
@@ -724,22 +729,28 @@ export class PdfCanvas {
     selection.style.top = `${bounds.y * this.zoom}px`;
     selection.style.width = `${bounds.w * this.zoom}px`;
     selection.style.height = `${bounds.h * this.zoom}px`;
-    if (selected.object.type !== "text") {
-      const corners = ["nw", "ne", "sw", "se"] as const;
-      for (const corner of corners) {
-        const handle = document.createElement("div");
-        handle.className = "pc-handle";
-        handle.dataset.corner = corner;
-        handle.style.left = corner.includes("w") ? "0" : "100%";
-        handle.style.top = corner.includes("n") ? "0" : "100%";
-        handle.style.transform = "translate(-50%, -50%)";
-        handle.addEventListener("pointerdown", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          this.startResize(event, selected.page, selected.object, corner);
-        });
-        selection.appendChild(handle);
-      }
+    const handles =
+      selected.object.type === "text"
+        ? (["w", "e"] as const)
+        : (["nw", "ne", "sw", "se"] as const);
+    for (const corner of handles) {
+      const handle = document.createElement("div");
+      handle.className = "pc-handle";
+      handle.dataset.corner = corner;
+      handle.style.left = corner.includes("w") ? "0" : "100%";
+      handle.style.top =
+        selected.object.type === "text"
+          ? "50%"
+          : corner.includes("n")
+            ? "0"
+            : "100%";
+      handle.style.transform = "translate(-50%, -50%)";
+      handle.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.startResize(event, selected.page, selected.object, corner);
+      });
+      selection.appendChild(handle);
     }
     overlay.appendChild(selection);
     this.selectionEl = selection;
@@ -1329,6 +1340,28 @@ export class PdfCanvas {
     this.emit("change", { reason: "page" });
   }
 
+  duplicatePage(index = this.currentPageIndex): boolean {
+    const source = this.pages[index];
+    if (!source) return false;
+    if (this.originalEdit) this.finishOriginalEdit();
+    this.beginMutation();
+    const clone: PageState = {
+      ...deepClone(source),
+      id: uid(),
+      objects: deepClone(source.objects).map((object) => ({
+        ...object,
+        id: uid(),
+      })),
+    };
+    this.pages.splice(index + 1, 0, clone);
+    this.currentPageIndex = index + 1;
+    this.commitMutation("page");
+    this.buildPages();
+    this.goToPage(index + 1, false);
+    this.emit("change", { reason: "page" });
+    return true;
+  }
+
   deletePage(index: number): boolean {
     if (this.originalEdit) this.finishOriginalEdit();
     if (this.pages.length <= 1) {
@@ -1574,15 +1607,27 @@ export class PdfCanvas {
       target[key] = value;
     }
     if (selected.object.type === "text") {
-      const measured = measureText(
-        selected.object.text || " ",
-        selected.object.fontSize,
-        selected.object.fontFamily,
-        selected.object.bold,
-        selected.object.italic,
-      );
-      selected.object.w = measured.width;
-      selected.object.h = measured.height;
+      if (selected.object.wrap) {
+        const lines = wrapTextLines(
+          selected.object.text,
+          selected.object.w,
+          selected.object.fontSize,
+          selected.object.fontFamily,
+          selected.object.bold,
+          selected.object.italic,
+        );
+        selected.object.h = Math.max(1, lines.length) * selected.object.fontSize * 1.25;
+      } else {
+        const measured = measureText(
+          selected.object.text || " ",
+          selected.object.fontSize,
+          selected.object.fontFamily,
+          selected.object.bold,
+          selected.object.italic,
+        );
+        selected.object.w = measured.width;
+        selected.object.h = measured.height;
+      }
     }
     this.commitMutation("object");
     this.renderObjects(selected.page);
@@ -1758,15 +1803,27 @@ export class PdfCanvas {
     const onInput = () => {
       const text = el.innerText.replace(/\u00a0/g, " ").replace(/\n$/, "");
       object.text = text;
-      const measured = measureText(
-        text || " ",
-        object.fontSize,
-        object.fontFamily,
-        object.bold,
-        object.italic,
-      );
-      object.w = measured.width;
-      object.h = measured.height;
+      if (object.wrap) {
+        const lines = wrapTextLines(
+          text,
+          object.w,
+          object.fontSize,
+          object.fontFamily,
+          object.bold,
+          object.italic,
+        );
+        object.h = Math.max(1, lines.length) * object.fontSize * 1.25;
+      } else {
+        const measured = measureText(
+          text || " ",
+          object.fontSize,
+          object.fontFamily,
+          object.bold,
+          object.italic,
+        );
+        object.w = measured.width;
+        object.h = measured.height;
+      }
       el.style.width = `${object.w * this.zoom}px`;
       el.style.height = `${object.h * this.zoom}px`;
       this.emit("change", { reason: "text" });
@@ -2236,6 +2293,23 @@ export class PdfCanvas {
 
     let width = right - left;
     let height = bottom - top;
+    if (object.type === "text") {
+      width = Math.max(40, width);
+      object.w = width;
+      object.x = handle.includes("w") ? right - width : left;
+      object.y = top;
+      object.wrap = true;
+      const lines = wrapTextLines(
+        object.text,
+        object.w,
+        object.fontSize,
+        object.fontFamily,
+        object.bold,
+        object.italic,
+      );
+      object.h = Math.max(1, lines.length) * object.fontSize * 1.25;
+      return;
+    }
     if (object.type === "image" && object.lockAspect) {
       const aspect = bounds.w / Math.max(1, bounds.h);
       height = width / aspect;

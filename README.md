@@ -8,7 +8,7 @@
 - Website / playground: https://pdf.eneawork.it
 - Source: https://github.com/Frenxys/pdfcanvas
 
-> Status: `0.6.x`. The editing model and public API are usable but may still change.
+> Status: `0.7.x`. The editing model and public API are usable but may still change.
 
 ## Features
 
@@ -18,7 +18,8 @@
 - **Scene objects**: text, images, rectangles, ellipses, lines, freehand pen, highlighter and whiteout.
 - **Direct manipulation**: drag, resize, centre snapping, arrow-key nudge, duplicate, z-order, delete.
 - **Text editing** in place, with font family, size, weight, style, colour and alignment.
-- **Page management**: insert blank pages, delete, reorder, rotate.
+- **Page management**: insert blank pages, duplicate, delete, reorder by drag or buttons, rotate.
+- **Text boxes** grow with their content or wrap after a side-handle resize; wrapped text exports as wrapped PDF text.
 - **Undo / redo** with snapshots (object and page operations).
 - **Vector export**: original pages stay vector; overlays are drawn as PDF text, shapes and images.
 - **Everything local**: the PDF never leaves the browser. The worker is self-hosted by the app.
@@ -204,6 +205,7 @@ editor.sendBackward();
 
 ```ts
 await editor.addBlankPage(afterIndex);
+editor.duplicatePage(index);
 editor.deletePage(index);
 editor.rotatePage(index, 90);
 editor.movePage(from, to);
@@ -249,7 +251,7 @@ Events: `load`, `change`, `selectionchange`, `originaledit`, `zoom`, `pagechange
 | `V` / `T` / `E` / `I` / `R` / `O` / `L` / `P` / `H` / `W` | Select / text / edit original text / image / rectangle / ellipse / line / pen / highlight / whiteout |
 | `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` | Undo / redo |
 | `Ctrl/Cmd+D` | Duplicate |
-| `Ctrl/Cmd+S` | Emit `save` |
+| `Ctrl/Cmd+S` | Download the edited PDF (also while a field or text edit is focused) |
 | `Ctrl/Cmd+=`, `Ctrl/Cmd+-`, `Ctrl/Cmd+0` | Zoom in / out / fit width |
 | `Ctrl/Cmd` + wheel | Zoom at pointer |
 | Arrows, `Shift` + arrows | Nudge 1 pt / 10 pt |

@@ -5,6 +5,7 @@ import {
   normaliseImage,
   toRgb,
   clamp,
+  wrapTextLines,
 } from "./utils";
 import { totalRotation, type PageState } from "./model";
 import type {
@@ -323,7 +324,16 @@ async function drawText(
   const text = object.text ?? "";
   if (!text.trim()) return;
   const font = await getFont(object.fontFamily, object.bold, object.italic);
-  const lines = text.split("\n");
+  const lines = object.wrap
+    ? wrapTextLines(
+        text,
+        object.w,
+        object.fontSize,
+        object.fontFamily,
+        object.bold,
+        object.italic,
+      )
+    : text.split("\n");
   const lineHeight = object.fontSize * 1.25;
   const ascent = object.fontSize * 0.925;
 
@@ -400,7 +410,17 @@ async function drawTextAsImage(
   context.font = `${object.italic ? "italic " : ""}${object.bold ? "700" : "400"} ${object.fontSize}px ${FONT_CSS[object.fontFamily]}`;
   context.fillStyle = object.color;
   context.textBaseline = "alphabetic";
-  object.text.split("\n").forEach((line, index) => {
+  (object.wrap
+    ? wrapTextLines(
+        object.text,
+        object.w,
+        object.fontSize,
+        object.fontFamily,
+        object.bold,
+        object.italic,
+      )
+    : object.text.split("\n")
+  ).forEach((line, index) => {
     const width = context.measureText(line).width;
     const offset =
       object.align === "center"

@@ -1,6 +1,6 @@
 {
   "name": "pdfcanvas",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Open-source client-side PDF editor for the browser: complete editable UI, original-text editing, annotations, page management and vector export. No server required.",
   "license": "MIT",
   "author": "Enea Zani <https://github.com/Frenxys>",

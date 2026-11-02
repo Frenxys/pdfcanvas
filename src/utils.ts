@@ -160,6 +160,69 @@ export function measureText(
   };
 }
 
+/** Splits text into lines that fit `maxWidth`, preserving explicit newlines. */
+export function wrapTextLines(
+  text: string,
+  maxWidth: number,
+  fontSize: number,
+  fontFamily: FontFamily,
+  bold: boolean,
+  italic: boolean,
+): string[] {
+  const paragraphs = text.split("\n");
+  if (typeof document === "undefined") {
+    const approximate = Math.max(1, Math.floor(maxWidth / (fontSize * 0.55)));
+    return paragraphs.flatMap((line) => {
+      if (line.length <= approximate) return [line];
+      const chunks: string[] = [];
+      for (let index = 0; index < line.length; index += approximate) {
+        chunks.push(line.slice(index, index + approximate));
+      }
+      return chunks;
+    });
+  }
+  measureContext ??= document.createElement("canvas").getContext("2d");
+  if (!measureContext) return paragraphs;
+  measureContext.font = `${italic ? "italic " : ""}${bold ? "700" : "400"} ${fontSize}px ${FONT_CSS[fontFamily]}`;
+  const fits = (value: string) =>
+    measureContext!.measureText(value).width <= Math.max(1, maxWidth);
+  const output: string[] = [];
+  for (const paragraph of paragraphs) {
+    if (!paragraph) {
+      output.push("");
+      continue;
+    }
+    let line = "";
+    for (const token of paragraph.split(/(\s+)/)) {
+      if (!token) continue;
+      if (fits(line + token)) {
+        line += token;
+        continue;
+      }
+      if (line) {
+        output.push(line.replace(/\s+$/, ""));
+        line = "";
+      }
+      if (token.trim() && !fits(token)) {
+        let chunk = "";
+        for (const char of token) {
+          if (chunk && !fits(chunk + char)) {
+            output.push(chunk);
+            chunk = char;
+          } else {
+            chunk += char;
+          }
+        }
+        line = chunk;
+      } else {
+        line = token.replace(/^\s+/, "");
+      }
+    }
+    output.push(line.replace(/\s+$/, ""));
+  }
+  return output.length > 0 ? output : [""];
+}
+
 export async function toBytes(source: ArrayBuffer | Uint8Array | Blob | File | string): Promise<Uint8Array> {
   if (source instanceof Uint8Array) {
     return new Uint8Array(source);

@@ -38,6 +38,8 @@ export interface TextObject extends ObjectBase {
   italic: boolean;
   color: string;
   align: TextAlign;
+  /** Wrap text to the object width instead of growing horizontally. */
+  wrap?: boolean;
 }
 
 export interface ImageObject extends ObjectBase {

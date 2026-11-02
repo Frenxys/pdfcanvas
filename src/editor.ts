@@ -1,6 +1,7 @@
 import { PdfCanvas } from "./engine";
 import { EDITOR_STYLES } from "./editor-styles";
 import type {
+  ImageObject,
   PdfCanvasOptions,
   PdfSource,
   PenObject,
@@ -122,6 +123,7 @@ const LABELS: Record<Locale, Record<string, string>> = {
     whiteout: "Whiteout",
     signature: "Signature",
     addPage: "Add page",
+    duplicatePage: "Duplicate page",
     deletePage: "Delete page",
     rotatePage: "Rotate page",
     moveUp: "Move up",
@@ -130,6 +132,10 @@ const LABELS: Record<Locale, Record<string, string>> = {
     of: "of",
     noDocument: "No document",
     openFirst: "Open a PDF to start.",
+    emptyTitle: "Open a PDF to start",
+    emptyHint: "Drag a file here or choose one. Everything stays on your device.",
+    choosePdf: "Choose a PDF",
+    lockAspect: "Keep ratio",
     noSelection: "Select an element on the page to edit its properties.",
     font: "Font",
     size: "Size",
@@ -195,6 +201,7 @@ const LABELS: Record<Locale, Record<string, string>> = {
     whiteout: "Bianchetto",
     signature: "Firma",
     addPage: "Aggiungi pagina",
+    duplicatePage: "Duplica pagina",
     deletePage: "Elimina pagina",
     rotatePage: "Ruota pagina",
     moveUp: "Sposta su",
@@ -203,6 +210,10 @@ const LABELS: Record<Locale, Record<string, string>> = {
     of: "di",
     noDocument: "Nessun documento",
     openFirst: "Apri un PDF per iniziare.",
+    emptyTitle: "Apri un PDF per iniziare",
+    emptyHint: "Trascina un file qui oppure sceglilo. Resta sul tuo dispositivo.",
+    choosePdf: "Scegli un PDF",
+    lockAspect: "Mantieni proporzioni",
     noSelection: "Seleziona un elemento sulla pagina per modificarne le proprietà.",
     font: "Font",
     size: "Dimensione",
@@ -405,6 +416,14 @@ export class PdfCanvasEditor {
   private saving = false;
   private userOpened = false;
   private readonly restorePromise: Promise<void>;
+  private readonly onSaveShortcut = (event: KeyboardEvent) => {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void this.download();
+  };
 
   constructor(container: HTMLElement, options: PdfCanvasEditorOptions = {}) {
     if (!container) throw new Error("A container element is required.");
@@ -418,10 +437,12 @@ export class PdfCanvasEditor {
     this.root.style.setProperty("--pce-accent", options.accent ?? "#6b4eff");
     this.root.innerHTML = `
       <header class="pce-topbar">
-        <a class="pce-brand" href="${escapeHtml(options.brandHref ?? "#")}" target="_blank" rel="noreferrer">
+        ${options.brandHref
+          ? `<a class="pce-brand" href="${escapeHtml(options.brandHref)}" target="_blank" rel="noreferrer">`
+          : `<span class="pce-brand">`}
           <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#6b4eff"/><path d="M20 12h16.5L47 22.5V52H20z" fill="#fff"/><path d="M36.5 12v10.5H47z" fill="#c9c0ff"/><path d="M26 33h15M26 42h9" stroke="#6b4eff" stroke-width="3.5" stroke-linecap="round"/></svg>
           <span>${escapeHtml(options.brandName ?? "PdfCanvas")}</span>
-        </a>
+        ${options.brandHref ? `</a>` : `</span>`}
         <div class="pce-file"><strong data-file>${this.t("noDocument")}</strong><small data-save>${this.t("local")}</small></div>
         <div class="pce-center">
           <span data-undo-slot></span>
@@ -455,6 +476,7 @@ export class PdfCanvasEditor {
           <div class="pce-page-list" data-pages-list></div>
           <div class="pce-page-actions">
             <button type="button" data-add-page title="${this.t("addPage")}">${icon("plus")}</button>
+            <button type="button" data-duplicate-page title="${this.t("duplicatePage")}">${icon("duplicate")}</button>
             <button type="button" data-rotate-page title="${this.t("rotatePage")}">${icon("rotate")}</button>
             <button type="button" data-move-up title="${this.t("moveUp")}">${icon("up")}</button>
             <button type="button" data-move-down title="${this.t("moveDown")}">${icon("down")}</button>
@@ -463,6 +485,14 @@ export class PdfCanvasEditor {
         </aside>
         <main class="pce-stage-wrap">
           <div class="pce-stage" data-mount></div>
+          <div class="pce-empty" data-empty>
+            <div class="pce-empty-card">
+              <span class="pce-empty-icon">${icon("open", 30)}</span>
+              <h2>${this.t("emptyTitle")}</h2>
+              <p>${this.t("emptyHint")}</p>
+              <button type="button" class="pce-primary" data-empty-open>${icon("open")}<span>${this.t("choosePdf")}</span></button>
+            </div>
+          </div>
           <div class="pce-mobile-zoom" data-mobile-zoom>
             <button type="button" class="pce-iconbtn" data-mobile-zoom-out title="${this.t("zoomOut")}">${icon("zoomOut")}</button>
             <span data-mobile-zoom-label>100%</span>
@@ -513,6 +543,7 @@ export class PdfCanvasEditor {
       accent: options.accent ?? "#6b4eff",
     });
 
+    document.addEventListener("keydown", this.onSaveShortcut, true);
     this.buildTools();
     this.bindEvents();
     this.renderPages();
@@ -563,6 +594,7 @@ export class PdfCanvasEditor {
     this.query("[data-mobile-zoom-in]").addEventListener("click", () => this.core.zoomIn());
     this.query("[data-mobile-zoom-label]").addEventListener("click", () => this.core.fitWidth());
     this.query("[data-open]").addEventListener("click", () => this.fileInput.click());
+    this.query("[data-empty-open]").addEventListener("click", () => this.fileInput.click());
     this.fileInput.addEventListener("change", () => {
       const file = this.fileInput.files?.[0];
       this.fileInput.value = "";
@@ -576,8 +608,9 @@ export class PdfCanvasEditor {
     this.query("[data-inspector-close]").addEventListener("click", () => this.closePanels());
     this.backdrop.addEventListener("click", () => this.closePanels());
     this.query("[data-add-page]").addEventListener("click", () => void this.core.addBlankPage());
+    this.query("[data-duplicate-page]").addEventListener("click", () => this.core.duplicatePage(this.core.getCurrentPage()));
     this.query("[data-delete-page]").addEventListener("click", () => this.core.deletePage(this.core.getCurrentPage()));
-    this.query("[data-rotate-page]").addEventListener("click", () => this.core.rotatePage(this.core.getCurrentPage(), 90));
+    this.query("[data-rotate-page]").addEventListener("click", () => this.rotateCurrentPage());
     this.query("[data-move-up]").addEventListener("click", () => {
       const current = this.core.getCurrentPage();
       this.core.movePage(current, current - 1);
@@ -613,6 +646,7 @@ export class PdfCanvasEditor {
     });
     this.core.on("load", ({ fileName }) => {
       this.query("[data-file]").textContent = fileName;
+      if (this.core.getTool() !== "select") this.core.setTool("select");
       this.syncTopbar();
       this.renderPages();
       this.renderInspector();
@@ -620,6 +654,7 @@ export class PdfCanvasEditor {
       this.scheduleAutosave();
     });
     this.core.on("originaledit", ({ edit }) => this.renderTextbar(edit));
+    this.core.on("save", () => void this.download());
     this.core.on("error", ({ error }) => this.toast(error.message, true));
   }
 
@@ -650,6 +685,7 @@ export class PdfCanvasEditor {
 
   destroy(): void {
     this.destroyed = true;
+    document.removeEventListener("keydown", this.onSaveShortcut, true);
     if (this.saveTimer) window.clearTimeout(this.saveTimer);
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
     this.core.destroy();
@@ -670,7 +706,19 @@ export class PdfCanvasEditor {
     this.query("[data-file]").textContent = state.pageCount
       ? state.fileName
       : this.t("noDocument");
-    this.query("[data-export]").toggleAttribute("disabled", state.pageCount === 0);
+    const hasPages = state.pageCount > 0;
+    this.query("[data-export]").toggleAttribute("disabled", !hasPages);
+    this.query<HTMLElement>("[data-empty]").hidden = hasPages;
+    for (const selector of [
+      "[data-add-page]",
+      "[data-duplicate-page]",
+      "[data-rotate-page]",
+      "[data-move-up]",
+      "[data-move-down]",
+      "[data-delete-page]",
+    ]) {
+      this.query<HTMLButtonElement>(selector).disabled = !hasPages;
+    }
     this.refreshPagesActive();
   }
 
@@ -678,6 +726,12 @@ export class PdfCanvasEditor {
     const active = this.core.getTool();
     for (const b of this.toolsBar.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
       b.setAttribute("aria-pressed", String(b.dataset.tool === active));
+    }
+  }
+
+  private clearDropTargets() {
+    for (const node of this.pagesList.querySelectorAll(".drop-target")) {
+      node.classList.remove("drop-target");
     }
   }
 
@@ -721,9 +775,32 @@ export class PdfCanvasEditor {
         el("small", "", `${Math.round(page.width)} × ${Math.round(page.height)} pt`),
       );
       b.append(thumb, meta);
+      b.draggable = true;
       b.addEventListener("click", () => {
         this.core.goToPage(page.index);
         this.closePanels();
+      });
+      b.addEventListener("dragstart", (event) => {
+        event.dataTransfer?.setData("text/plain", String(page.index));
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        b.classList.add("dragging");
+      });
+      b.addEventListener("dragend", () => {
+        b.classList.remove("dragging");
+        this.clearDropTargets();
+      });
+      b.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        this.clearDropTargets();
+        b.classList.add("drop-target");
+      });
+      b.addEventListener("dragleave", () => b.classList.remove("drop-target"));
+      b.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const from = Number(event.dataTransfer?.getData("text/plain"));
+        this.clearDropTargets();
+        if (Number.isInteger(from)) this.core.movePage(from, page.index);
       });
       this.pagesList.appendChild(b);
     }
@@ -753,7 +830,7 @@ export class PdfCanvasEditor {
       form.appendChild(info);
       const buttons = el("div", "pce-btnrow");
       const rotate = button(`${icon("rotate")}<span>${this.t("rotatePage")}</span>`, this.t("rotatePage"), "pce-smallbtn");
-      rotate.addEventListener("click", () => this.core.rotatePage(this.core.getCurrentPage(), 90));
+      rotate.addEventListener("click", () => this.rotateCurrentPage());
       const del = button(`${icon("trash")}<span>${this.t("deletePage")}</span>`, this.t("deletePage"), "pce-smallbtn danger");
       del.addEventListener("click", () => this.core.deletePage(this.core.getCurrentPage()));
       buttons.append(rotate, del);
@@ -785,8 +862,18 @@ export class PdfCanvasEditor {
       );
       form.appendChild(row);
       const styleRow = el("div", "pce-row");
-      const bold = this.toggleButton(this.t("bold"), text.bold, () => this.core.updateSelected({ bold: !text.bold }));
-      const italic = this.toggleButton(this.t("italic"), text.italic, () => this.core.updateSelected({ italic: !text.italic }));
+      const bold = this.toggleButton(
+        this.t("bold"),
+        text.bold,
+        (next) => this.core.updateSelected({ bold: next }),
+        "bold",
+      );
+      const italic = this.toggleButton(
+        this.t("italic"),
+        text.italic,
+        (next) => this.core.updateSelected({ italic: next }),
+        "italic",
+      );
       styleRow.append(bold, italic);
       form.appendChild(styleRow);
       form.appendChild(this.selectField(this.t("align"), text.align, [
@@ -800,7 +887,14 @@ export class PdfCanvasEditor {
       form.appendChild(this.colorField(this.t("stroke"), shape.stroke ?? "#191722", (value) => this.core.updateSelected({ stroke: value } as never)));
       form.appendChild(this.rangeField(this.t("strokeWidth"), shape.strokeWidth, 0, 12, 0.5, (value) => this.core.updateSelected({ strokeWidth: value } as never)));
     } else if (object.type === "image") {
-      form.appendChild(el("div", "pce-note", object.name ?? "Image"));
+      const image = object as ImageObject;
+      form.appendChild(el("div", "pce-note", image.name ?? "Image"));
+      const lock = this.toggleButton(
+        this.t("lockAspect"),
+        Boolean(image.lockAspect),
+        (next) => this.core.updateSelected({ lockAspect: next } as never),
+      );
+      form.appendChild(lock);
     } else if (object.type === "line" || object.type === "pen") {
       const ink = object as PenObject;
       form.appendChild(this.colorField(this.t("stroke"), ink.stroke, (value) => this.core.updateSelected({ stroke: value } as never)));
@@ -886,14 +980,28 @@ export class PdfCanvasEditor {
     return wrap;
   }
 
-  private toggleButton(label: string, active: boolean, onClick: () => void): HTMLButtonElement {
+  private toggleButton(
+    label: string,
+    active: boolean,
+    onClick: (next: boolean) => void,
+    iconName?: string,
+  ): HTMLButtonElement {
     const b = button(
-      `${icon(label === this.t("bold") ? "bold" : "italic")}<span>${label}</span>`,
+      `${iconName ? icon(iconName) : ""}<span>${escapeHtml(label)}</span>`,
       label,
       "pce-smallbtn",
     );
-    if (active) b.style.borderColor = "var(--pce-accent)";
-    b.addEventListener("click", onClick);
+    const paint = (on: boolean) => {
+      b.setAttribute("aria-pressed", String(on));
+      b.style.borderColor = on ? "var(--pce-accent)" : "";
+      b.style.color = on ? "var(--pce-accent)" : "";
+    };
+    paint(active);
+    b.addEventListener("click", () => {
+      const next = b.getAttribute("aria-pressed") !== "true";
+      paint(next);
+      onClick(next);
+    });
     return b;
   }
 
@@ -982,8 +1090,15 @@ export class PdfCanvasEditor {
     this.backdrop.style.display = "none";
   }
 
+  private rotateCurrentPage() {
+    this.core.rotatePage(this.core.getCurrentPage(), 90);
+    this.core.fitPage();
+  }
+
   private openSignature() {
     const modal = el("div", "pce-modal");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
     modal.innerHTML = `
       <div class="pce-modal-card">
         <div class="pce-modal-head">
@@ -1000,6 +1115,8 @@ export class PdfCanvasEditor {
       </div>`;
     this.root.appendChild(modal);
     const canvas = modal.querySelector<HTMLCanvasElement>("canvas")!;
+    const insert = modal.querySelector<HTMLButtonElement>("[data-insert]")!;
+    insert.disabled = true;
     const ctx = canvas.getContext("2d")!;
     ctx.lineWidth = 2.4;
     ctx.lineCap = "round";
@@ -1018,6 +1135,7 @@ export class PdfCanvasEditor {
     canvas.addEventListener("pointerdown", (event) => {
       drawing = true;
       empty = false;
+      insert.disabled = false;
       last = point(event);
       canvas.setPointerCapture(event.pointerId);
       ctx.beginPath();
@@ -1041,14 +1159,28 @@ export class PdfCanvasEditor {
     };
     canvas.addEventListener("pointerup", stop);
     canvas.addEventListener("pointercancel", stop);
-    const close = () => modal.remove();
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      modal.remove();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    modal.addEventListener("pointerdown", (event) => {
+      if (event.target === modal) close();
+    });
     modal.querySelector("[data-close]")?.addEventListener("click", close);
     modal.querySelector("[data-cancel]")?.addEventListener("click", close);
     modal.querySelector("[data-clear]")?.addEventListener("click", () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       empty = true;
+      insert.disabled = true;
     });
-    modal.querySelector("[data-insert]")?.addEventListener("click", () => {
+    insert.addEventListener("click", () => {
       if (empty) return;
       const dataUrl = canvas.toDataURL("image/png");
       close();
@@ -1058,6 +1190,8 @@ export class PdfCanvasEditor {
 
   private openTemplates() {
     const modal = el("div", "pce-modal");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
     modal.innerHTML = `
       <div class="pce-modal-card">
         <div class="pce-modal-head">
@@ -1073,25 +1207,45 @@ export class PdfCanvasEditor {
       card.type = "button";
       card.innerHTML = `<strong>${escapeHtml(template.name)}</strong><small>${escapeHtml(template.description ?? "")}</small>`;
       card.addEventListener("click", () => {
-        modal.remove();
+        close();
         void this.applyTemplate(template);
       });
       grid.appendChild(card);
     }
-    const close = () => modal.remove();
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      modal.remove();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    modal.addEventListener("pointerdown", (event) => {
+      if (event.target === modal) close();
+    });
     modal.querySelector("[data-close]")?.addEventListener("click", close);
   }
 
   async applyTemplate(template: EditorTemplate): Promise<void> {
-    if (this.core.getPages().length === 0) {
+    const pages = this.core.getPages();
+    if (pages.length === 0) {
       this.toast(this.t("noTemplatePage"), true);
       return;
     }
+    const page = pages[this.core.getCurrentPage()] ?? pages[0];
+    if (!page) return;
+    const scale = Math.max(
+      0.5,
+      Math.min(page.width / 595, page.height / 842),
+    );
     for (const object of template.objects) {
       if (object.type === "text") {
-        await this.core.addText(object.x, object.y, {
+        await this.core.addText(object.x * scale, object.y * scale, {
           text: object.text ?? "",
-          fontSize: object.fontSize,
+          fontSize: object.fontSize ? object.fontSize * scale : undefined,
           fontFamily: object.fontFamily,
           bold: object.bold,
           italic: object.italic,
@@ -1099,13 +1253,15 @@ export class PdfCanvasEditor {
         });
       } else {
         this.core.addShape(object.shape ?? "rect", {
-          x: object.x,
-          y: object.y,
-          width: object.width,
-          height: object.height,
+          x: object.x * scale,
+          y: object.y * scale,
+          width: object.width ? object.width * scale : undefined,
+          height: object.height ? object.height * scale : undefined,
           fill: object.fill,
           stroke: object.stroke,
-          strokeWidth: object.strokeWidth,
+          strokeWidth: object.strokeWidth
+            ? object.strokeWidth * scale
+            : undefined,
         });
       }
     }

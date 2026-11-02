@@ -23,9 +23,10 @@ declare global {
 }
 window.pdfcanvasEditorDemo = editor;
 
+const params = new URLSearchParams(location.search);
 try {
   await editor.ready();
-  if (editor.core.getPages().length === 0) {
+  if (params.get("sample") !== "0" && editor.core.getPages().length === 0) {
     const response = await fetch("/demo/sample.pdf");
     if (response.ok) {
       await editor.open(await response.arrayBuffer(), "sample.pdf");
